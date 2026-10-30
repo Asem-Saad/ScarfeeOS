@@ -103,10 +103,53 @@ impl Provider for LocalProvider {
     }
 
     fn complete(&self, req: &Request) -> Result<String, String> {
-        let mut body = serde_json::json!({
+        let json = self.post(serde_json::json!({
             "messages": [{"role": "user", "content": req.prompt}],
             "stream": false,
-        });
+        }))?;
+        json["choices"][0]["message"]["content"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "local provider: reply has no choices[0].message.content".to_string())
+    }
+}
+
+/// A tool call as the model wrote it, before any checking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawToolCall {
+    pub name: String,
+    /// JSON text of the arguments, exactly as received.
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelReply {
+    Text(String),
+    ToolCalls(Vec<RawToolCall>),
+}
+
+impl LocalProvider {
+    /// Sends one chat turn with the OpenAI `tools` field. `tools` is a JSON array
+    /// of function definitions. Returns the tool calls when the model made any,
+    /// otherwise its text.
+    pub fn complete_with_tools(
+        &self,
+        system: &str,
+        user: &str,
+        tools: &serde_json::Value,
+    ) -> Result<ModelReply, String> {
+        let json = self.post(serde_json::json!({
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "tools": tools,
+            "stream": false,
+        }))?;
+        parse_reply(&json)
+    }
+
+    fn post(&self, mut body: serde_json::Value) -> Result<serde_json::Value, String> {
         if let Some(model) = &self.config.model {
             body["model"] = model.clone().into();
         }
@@ -125,13 +168,35 @@ impl Provider for LocalProvider {
             let detail: String = text.chars().take(200).collect();
             return Err(format!("local provider: server returned HTTP {status}: {detail}"));
         }
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("local provider: malformed JSON in reply: {e}"))?;
-        json["choices"][0]["message"]["content"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| "local provider: reply has no choices[0].message.content".to_string())
+        serde_json::from_str(&text).map_err(|e| format!("local provider: malformed JSON in reply: {e}"))
     }
+}
+
+fn parse_reply(json: &serde_json::Value) -> Result<ModelReply, String> {
+    let message = &json["choices"][0]["message"];
+    if let Some(calls) = message["tool_calls"].as_array().filter(|c| !c.is_empty()) {
+        let calls = calls
+            .iter()
+            .map(|call| {
+                let function = &call["function"];
+                let name = function["name"]
+                    .as_str()
+                    .ok_or_else(|| "local provider: tool call has no function.name".to_string())?;
+                // OpenAI sends arguments as a JSON string; some servers send an object.
+                let arguments = match &function["arguments"] {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => "{}".to_string(),
+                    other => other.to_string(),
+                };
+                Ok(RawToolCall { name: name.to_string(), arguments })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        return Ok(ModelReply::ToolCalls(calls));
+    }
+    message["content"]
+        .as_str()
+        .map(|text| ModelReply::Text(text.to_string()))
+        .ok_or_else(|| "local provider: reply has no tool_calls and no choices[0].message.content".to_string())
 }
 
 /// Optional Claude API provider. Not implemented yet.
@@ -316,5 +381,47 @@ mod tests {
             ..LocalConfig::default()
         };
         assert!(LocalProvider::new(cfg).is_ok());
+    }
+
+    #[test]
+    fn local_tool_call_reply() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"open_app","arguments":"{\"name\":\"calculator\"}"}}]}}]}"#;
+        let (url, server) = serve_once("200 OK", body);
+        let tools = serde_json::json!([{"type": "function", "function": {"name": "open_app"}}]);
+        let reply = local(url, None).complete_with_tools("sys", "افتح الآلة الحاسبة", &tools).unwrap();
+        assert_eq!(
+            reply,
+            ModelReply::ToolCalls(vec![RawToolCall { name: "open_app".into(), arguments: r#"{"name":"calculator"}"#.into() }])
+        );
+        let raw = server.join().unwrap();
+        let sent: serde_json::Value = serde_json::from_str(raw.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(sent["tools"], tools);
+        assert_eq!(sent["messages"][0]["role"], "system");
+        assert_eq!(sent["messages"][1]["content"], "افتح الآلة الحاسبة");
+    }
+
+    #[test]
+    fn local_text_reply_with_tools() {
+        let (url, server) = serve_once("200 OK", r#"{"choices":[{"message":{"content":"مرحبا","tool_calls":[]}}]}"#);
+        let reply = local(url, None).complete_with_tools("s", "u", &serde_json::json!([])).unwrap();
+        server.join().unwrap();
+        assert_eq!(reply, ModelReply::Text("مرحبا".into()));
+    }
+
+    #[test]
+    fn tool_call_arguments_may_be_an_object() {
+        let json = serde_json::json!({"choices": [{"message": {"tool_calls": [
+            {"function": {"name": "set_language", "arguments": {"lang": "ar"}}}
+        ]}}]});
+        assert_eq!(
+            parse_reply(&json).unwrap(),
+            ModelReply::ToolCalls(vec![RawToolCall { name: "set_language".into(), arguments: r#"{"lang":"ar"}"#.into() }])
+        );
+    }
+
+    #[test]
+    fn reply_with_neither_text_nor_calls_is_an_error() {
+        let err = parse_reply(&serde_json::json!({"choices": [{"message": {"content": null}}]})).unwrap_err();
+        assert!(err.contains("no tool_calls"), "{err}");
     }
 }
