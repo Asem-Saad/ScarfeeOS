@@ -15,6 +15,15 @@ pub trait Provider {
     fn complete(&self, req: &Request) -> Result<String, String>;
 }
 
+/// Reply limit for a turn with tools, which is a short tool call or a short
+/// answer. Without a limit a runaway reply (one that repeats itself until the
+/// context is full) kept the command model busy for two minutes. 768 tokens is
+/// a long answer in Arabic, which takes about 2 to 3 tokens per word, and at
+/// 10 to 20 tokens per second on a CPU it stays well inside the request timeout.
+/// The writer is asked without tools, so it is not limited here and keeps its
+/// longer timeout for long texts.
+const COMMAND_MAX_TOKENS: u32 = 768;
+
 /// Settings for the local OpenAI-compatible server (llama.cpp, vLLM).
 #[derive(Clone, Debug)]
 pub struct LocalConfig {
@@ -148,6 +157,7 @@ impl LocalProvider {
         // Some servers reject an empty `tools` array.
         if tools.as_array().is_none_or(|t| !t.is_empty()) {
             body["tools"] = tools.clone();
+            body["max_tokens"] = COMMAND_MAX_TOKENS.into();
         }
         let json = self.post(body)?;
         parse_reply(&json)
@@ -403,6 +413,7 @@ mod tests {
         let raw = server.join().unwrap();
         let sent: serde_json::Value = serde_json::from_str(raw.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(sent["tools"], tools);
+        assert_eq!(sent["max_tokens"], COMMAND_MAX_TOKENS);
         assert_eq!(sent["messages"][0]["role"], "system");
         assert_eq!(sent["messages"][1]["content"], "افتح الآلة الحاسبة");
     }
@@ -415,6 +426,7 @@ mod tests {
         assert_eq!(reply, ModelReply::Text("مرحبا".into()));
         let sent: serde_json::Value = serde_json::from_str(raw.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert!(sent.get("tools").is_none(), "empty tools list must be omitted: {sent}");
+        assert!(sent.get("max_tokens").is_none(), "a turn without tools is not limited: {sent}");
         assert_eq!(sent["messages"][1]["content"], "u");
     }
 

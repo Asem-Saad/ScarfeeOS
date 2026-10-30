@@ -2,7 +2,7 @@
 //! mix foreign scripts into Arabic replies and make up the time and the news,
 //! so both are caught in code.
 
-use crate::lang::Language;
+use crate::lang::{self, Language};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Script {
@@ -92,6 +92,30 @@ pub fn check_reply(reply: &str, language: Language) -> Vec<Issue> {
     }
     flush(&mut word, &mut foreign);
     issues
+}
+
+/// The assistant's tools and the tools small models make up. The user is never
+/// told about tools, so a reply that contains one of these names is wrong.
+const TOOL_NAMES: &[&str] = &[
+    "open_app", "list_files", "search_files", "create_reminder", "schedule_meeting", "set_language", "current_time",
+    "delete_file", "move_file", "copy_file", "read_file", "write_file",
+];
+
+/// True when the reply names an internal tool, such as `delete_file`.
+pub fn names_a_tool(reply: &str) -> bool {
+    reply
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|word| TOOL_NAMES.iter().any(|name| word.eq_ignore_ascii_case(name)))
+}
+
+/// True when the request is only in Arabic letters and the reply is a sentence
+/// (three words or more) only in Latin letters. A short "OK" or a name is not
+/// a wrong language. Not when the user asked for a translation or for English.
+pub fn replied_in_wrong_language(user_text: &str, reply: &str) -> bool {
+    if lang::pure_script(user_text) != Some(Language::Arabic) || lang::pure_script(reply) != Some(Language::English) {
+        return false;
+    }
+    reply.split_whitespace().count() >= 3 && !asks_to_translate(user_text) && !normalize(user_text).contains("انجليز")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -771,5 +795,29 @@ mod tests {
         }
         assert!(!asks_to_translate("Switch the system language to Arabic"));
         assert!(!asks_to_translate("غير لغة النظام إلى العربية"));
+    }
+
+    #[test]
+    fn tool_names_in_a_reply_are_found() {
+        for reply in ["Use delete_file.", "I called `open_app` for you", "SET_LANGUAGE failed", "the move_file tool"] {
+            assert!(names_a_tool(reply), "{reply}");
+        }
+        for reply in ["Opening the app now", "Please open the file", "تم فتح الملف", "my_file.txt is here"] {
+            assert!(!names_a_tool(reply), "{reply}");
+        }
+    }
+
+    #[test]
+    fn only_a_purely_latin_reply_to_a_purely_arabic_request_is_wrong() {
+        assert!(replied_in_wrong_language("شغلي أغنية", "Sorry, I can't play music."));
+        assert!(!replied_in_wrong_language("شغلي أغنية", "عذرًا، لا أستطيع"));
+        assert!(!replied_in_wrong_language("شغلي أغنية", "عذرًا, I can't (sorry)"));
+        assert!(!replied_in_wrong_language("شغلي أغنية", "12:30"));
+        assert!(!replied_in_wrong_language("شغلي أغنية", "ok"));
+        assert!(!replied_in_wrong_language("شغلي أغنية", "Sorry, no."));
+        assert!(!replied_in_wrong_language("Play a song", "Sorry"));
+        assert!(!replied_in_wrong_language("ترجم صباح الخير إلى الإنجليزية", "Good morning"));
+        assert!(!replied_in_wrong_language("اكتب رسالة بالانجليزي", "Hello"));
+        assert!(!replied_in_wrong_language("اكتب رسالة بالإنجليزية", "Hello"));
     }
 }

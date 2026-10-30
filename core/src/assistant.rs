@@ -100,14 +100,7 @@ impl<'a> Assistant<'a> {
             Ok(now) => now,
             Err(e) => return Outcome::Error(e.to_string()),
         };
-        let system = format!(
-            "You are the assistant built into ScarfeeOS. Today is {}, {:04}-{:02}-{:02}. \
-             Reply in the language the user wrote in. Call a tool only when one fits the request. Never invent data.",
-            now.weekday_name(),
-            now.date.year,
-            now.date.month,
-            now.date.day
-        );
+        let system = system_prompt(now, true);
         let translating = guard::asks_to_translate(user_text);
         let tools = tool_schema_for(!translating);
         match self.model.chat(&system, user_text, &tools) {
@@ -125,14 +118,7 @@ impl<'a> Assistant<'a> {
     /// no writer or it failed, so the command model's own text is used instead.
     fn written_by_writer(&self, user_text: &str, language: Language, now: LocalTime) -> Option<Outcome> {
         let writer = self.writer?;
-        let system = format!(
-            "You are the assistant built into ScarfeeOS. Today is {}, {:04}-{:02}-{:02}. \
-             Reply in the language and dialect the user wrote in. Never invent data.",
-            now.weekday_name(),
-            now.date.year,
-            now.date.month,
-            now.date.day
-        );
+        let system = system_prompt(now, false);
         let no_tools = json!([]);
         match writer.chat(&system, user_text, &no_tools) {
             Ok(ModelReply::Text(text)) => Some(self.checked_reply(writer, &system, user_text, language, &no_tools, text)),
@@ -141,7 +127,8 @@ impl<'a> Assistant<'a> {
     }
 
     /// Asks `model` once more when the reply has words in a foreign script,
-    /// and keeps whichever reply has fewer of them.
+    /// is in English for an Arabic request, or names an internal tool. Keeps
+    /// whichever reply has fewer of these problems.
     fn checked_reply(
         &self,
         model: &dyn Model,
@@ -152,17 +139,36 @@ impl<'a> Assistant<'a> {
         text: String,
     ) -> Outcome {
         let issues = guard::check_reply(&text, language);
-        if !issues.is_empty() {
-            let name = match language {
-                Language::English => "English",
-                Language::Arabic => "Arabic",
-            };
-            let retry = format!(
-                "{system} Your last reply had words in a foreign script. Reply again in {name}, with no words in other scripts."
-            );
+        let wrong_language = guard::replied_in_wrong_language(user_text, &text);
+        let names_tool = guard::names_a_tool(&text);
+        let problems = issues.len() + usize::from(wrong_language) + usize::from(names_tool);
+        if problems > 0 {
+            let mut retry = system.to_string();
+            if !issues.is_empty() {
+                let name = match language {
+                    Language::English => "English",
+                    Language::Arabic => "Arabic",
+                };
+                retry.push_str(&format!(
+                    " Your last reply had words in a foreign script. Reply again in {name}, with no words in other scripts."
+                ));
+            }
+            if wrong_language {
+                retry.push_str(
+                    " Your last reply was in English, but the user wrote in Arabic. Reply again in Arabic only, in the user's dialect.",
+                );
+            }
+            if names_tool {
+                retry.push_str(
+                    " Your last reply named a tool or function. Reply again in plain words without naming any tool or function.",
+                );
+            }
             if let Ok(ModelReply::Text(again)) = model.chat(&retry, user_text, tools) {
                 let again_issues = guard::check_reply(&again, language);
-                if again_issues.len() < issues.len() {
+                let again_problems = again_issues.len()
+                    + usize::from(guard::replied_in_wrong_language(user_text, &again))
+                    + usize::from(guard::names_a_tool(&again));
+                if again_problems < problems {
                     return Outcome::Reply { text: again, issues: again_issues };
                 }
             }
@@ -230,6 +236,44 @@ fn in_user_language(model_text: String, user_text: &str) -> String {
     } else {
         stripped
     }
+}
+
+/// Rules for how the model talks to the user. The Arabic lines say the same as
+/// the English ones before them, because small models follow an instruction
+/// better in the language they are asked to answer in.
+const REPLY_RULES: &str = "\
+Always reply in the language and dialect of the user's latest message. \
+If it is Arabic, reply in Arabic, in the same dialect (Gulf, Egyptian, Levantine, Maghrebi or Modern Standard), and never in English. \
+If it is English, reply in English. Never answer in English only because the request is about music, writing or anything else. \
+ردّ دائمًا بلغة رسالة المستخدم ولهجتها. إذا كتب المستخدم بالعربية فاكتب بالعربية فقط، ولا تردّ بالإنجليزية أبدًا. \
+Never mention tools or functions, or their names, to the user, and never say \"the available tools\". \
+لا تذكر الأدوات أو الدوال أو أسماءها للمستخدم أبدًا. \
+Answer questions and writing requests yourself, directly: unit conversions, maths, emails and other texts, translations, explanations, advice. \
+Never refuse because no tool fits. \
+أجب بنفسك مباشرة عن الأسئلة وطلبات الكتابة والتحويل والترجمة، ولا ترفض بحجة عدم وجود أداة. \
+If you truly cannot do something on this computer, say so briefly in the user's language, without naming any tool. \
+Never invent data.";
+
+/// Added for the model that has tools.
+const TOOL_RULES: &str = "\
+Tools are only for acting on this computer: opening apps, listing or searching files, reminders, meetings and the system language. \
+Call a tool only when one fits the request. \
+A polite request or a question about ability, in any dialect, is a command and not a question: \
+\"Can you open the calculator?\", \"ممكن تفتح الآلة الحاسبة\", \"فيك تفتحلي الإيميل؟\", \"لو سمحت افتح الإيميل\". \
+Do it and do not ask back. \
+الطلب المهذب بأي لهجة، مثل فيك وممكن ولو سمحت، هو أمر وليس سؤالًا. نفّذه مباشرة ولا تسأل المستخدم.";
+
+/// The system prompt, with today's date from the clock. `tools` is true for
+/// the model that is offered tools, false for the writer.
+fn system_prompt(now: LocalTime, tools: bool) -> String {
+    format!(
+        "You are the assistant built into ScarfeeOS. Today is {}, {:04}-{:02}-{:02}. {REPLY_RULES}{}",
+        now.weekday_name(),
+        now.date.year,
+        now.date.month,
+        now.date.day,
+        if tools { format!(" {TOOL_RULES}") } else { String::new() },
+    )
 }
 
 /// Words that end a place name ("... in Tokyo right now").
@@ -1129,5 +1173,80 @@ mod tests {
         assert_eq!((cmd, writer), (1, 2));
         assert!(w.last_system.borrow().contains("Reply again in Arabic"));
         assert!(!m.last_system.borrow().contains("Reply again"));
+    }
+
+    #[test]
+    fn prompts_require_the_users_language_and_forbid_naming_tools() {
+        let m = model(call("open_app", r#"{"name":"email"}"#));
+        turn(&m, "فيك تفتحلي الإيميل؟", Language::Arabic);
+        let system = m.last_system.borrow().clone();
+        for needed in [
+            "language and dialect of the user's latest message",
+            "never in English",
+            "Never mention tools or functions",
+            "Never refuse because no tool fits",
+            "Tools are only for acting on this computer",
+            "is a command and not a question",
+            "فيك",
+            "ممكن",
+            "لو سمحت",
+            "بالعربية فقط",
+            "لا تذكر الأدوات",
+        ] {
+            assert!(system.contains(needed), "{needed}: {system}");
+        }
+        let w = model(text("اهلا"));
+        turn_with_writer(&model(text("x")), &w, "مرحبا", Language::Arabic);
+        let writer_system = w.last_system.borrow().clone();
+        assert!(writer_system.contains("Never mention tools or functions"));
+        assert!(writer_system.contains("Never refuse because no tool fits"));
+        assert!(!writer_system.contains("Tools are only for acting"));
+    }
+
+    #[test]
+    fn english_reply_to_an_arabic_request_is_retried_once() {
+        let english = "Sorry, I can't play music.";
+        let arabic = "عذرًا، لا أستطيع تشغيل الموسيقى هنا.";
+        let m = model_seq(vec![text(english), text(arabic)]);
+        assert_eq!(turn(&m, "شغلي أغنية", Language::Arabic), (reply(arabic), 2));
+        assert!(m.last_system.borrow().contains("the user wrote in Arabic"));
+        // Still English on the retry: the first reply is kept, with no third call.
+        let m = model_seq(vec![text(english), text(english)]);
+        assert_eq!(turn(&m, "شغلي أغنية", Language::Arabic), (reply(english), 2));
+    }
+
+    #[test]
+    fn english_reply_is_right_when_the_arabic_user_asked_for_it() {
+        for user in ["ترجم إلى الإنجليزية: صباح الخير", "اكتب لي رسالة بالإنجليزية"] {
+            let m = model(text("Good morning"));
+            assert_eq!(turn(&m, user, Language::Arabic), (reply("Good morning"), 1), "{user}");
+        }
+        // Code-switched and English requests are not checked.
+        let m = model(text("Sure, here it is."));
+        assert_eq!(turn(&m, "اكتب email قصير", Language::Arabic).1, 1);
+        assert_eq!(turn(&m, "Write a short email", Language::English).1, 2);
+    }
+
+    #[test]
+    fn reply_that_names_a_tool_is_retried_once() {
+        let bad = "I can use the delete_file tool for that.";
+        let good = "I cannot delete files here.";
+        let m = model_seq(vec![text(bad), text(good)]);
+        assert_eq!(turn(&m, "Delete my old files", Language::English), (reply(good), 2));
+        assert!(m.last_system.borrow().contains("named a tool or function"));
+        let m = model_seq(vec![text(bad), text(bad)]);
+        assert_eq!(turn(&m, "Delete my old files", Language::English), (reply(bad), 2));
+        let m = model(text("Opening your files now."));
+        assert_eq!(turn(&m, "Delete my old files", Language::English).1, 1);
+    }
+
+    #[test]
+    fn language_and_tool_name_retries_happen_on_the_writer() {
+        let m = model(text("command model text"));
+        let w = model_seq(vec![text("I would call open_app."), text("Done.")]);
+        let (outcome, cmd, writer) = turn_with_writer(&m, &w, "Open email", Language::English);
+        assert_eq!((outcome, cmd, writer), (reply("Done."), 1, 2));
+        assert!(w.last_system.borrow().contains("named a tool or function"));
+        assert!(!w.last_system.borrow().contains("Tools are only for acting"));
     }
 }
