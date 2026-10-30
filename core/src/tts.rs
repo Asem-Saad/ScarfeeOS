@@ -21,6 +21,7 @@
 use std::fmt;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -209,9 +210,15 @@ impl Speaker for CommandSpeaker {
     }
 }
 
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     fs::metadata(path).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn path_str(path: &Path) -> Result<String, TtsError> {
@@ -219,10 +226,11 @@ fn path_str(path: &Path) -> Result<String, TtsError> {
 }
 
 fn create_private(path: &Path) -> Result<(), TtsError> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options
         .open(path)
         .map(|_| ())
         .map_err(|e| TtsError::Io(format!("temporary file: {e}")))
@@ -269,7 +277,10 @@ impl TempDir {
             NEXT_TEMP.fetch_add(1, Ordering::SeqCst)
         ));
         // Fails if the name exists, so another user cannot pre-create it.
-        DirBuilder::new().mode(0o700).create(&dir).map_err(|e| TtsError::Io(format!("temporary directory: {e}")))?;
+        let mut builder = DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(0o700);
+        builder.create(&dir).map_err(|e| TtsError::Io(format!("temporary directory: {e}")))?;
         Ok(TempDir { dir })
     }
 }
@@ -637,7 +648,7 @@ fn split_long(sentence: &str, max: usize) -> Vec<String> {
     pieces
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
