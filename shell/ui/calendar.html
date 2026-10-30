@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="calendar-title"></title>
+  <link rel="stylesheet" href="calendar.css">
+</head>
+<body>
+  <main class="calendar">
+    <header class="calendar-header">
+      <h1 class="calendar-title" data-i18n="calendar-title"></h1>
+      <button type="button" id="refresh" class="button" data-i18n="calendar-refresh"></button>
+    </header>
+    <p id="events-notice" class="notice" hidden></p>
+    <section class="upcoming" aria-labelledby="upcoming-title">
+      <h2 id="upcoming-title" class="section-title" data-i18n="calendar-upcoming-title"></h2>
+      <p id="events-status" class="status" role="status"></p>
+      <ol id="events-list" class="events"></ol>
+    </section>
+    <section class="month" aria-labelledby="month-title">
+      <div class="month-header">
+        <h2 id="month-title" class="section-title"></h2>
+        <div class="month-nav">
+          <button type="button" id="month-previous" class="button" data-i18n="calendar-previous-month"></button>
+          <button type="button" id="month-today" class="button" data-i18n="calendar-today"></button>
+          <button type="button" id="month-next" class="button" data-i18n="calendar-next-month"></button>
+        </div>
+      </div>
+      <div id="month-grid" class="month-grid"></div>
+      <p id="month-hijri-note" class="note" hidden data-i18n="settings-hijri-note"></p>
+      <fieldset class="weekend">
+        <legend data-i18n="calendar-weekend-label"></legend>
+        <div id="weekend-options" class="weekend-options"></div>
+      </fieldset>
+    </section>
+  </main>
+  <script src="i18n.js"></script>
+  <script src="settings.js"></script>
+  <script src="calendar.js"></script>
+</body>
+</html>

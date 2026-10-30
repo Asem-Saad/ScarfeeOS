@@ -1,0 +1,228 @@
+/* Logical properties only: the layout mirrors from the `dir` attribute on the root element. */
+:root {
+  --surface: #ffffff;
+  --surface-muted: #f1f3f6;
+  --border: #d3d8e0;
+  --text: #1c2330;
+  --text-muted: #5a6577;
+  --accent: #2a5db0;
+  --accent-text: #ffffff;
+  --weekend-bg: #eef1f6;
+  --today-bg: #dde8fa;
+  --error: #b3261e;
+  --error-bg: #fde8e6;
+  font-family: system-ui, "Noto Sans", "Noto Sans Arabic", "Noto Naskh Arabic", "IBM Plex Arabic", "DejaVu Sans", sans-serif;
+  color: var(--text);
+  background: var(--surface);
+}
+
+:root:lang(ar) {
+  font-family: system-ui, "Noto Naskh Arabic", "Noto Sans Arabic", "IBM Plex Arabic", "Noto Sans", "DejaVu Sans", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  max-inline-size: 64rem;
+  margin-inline: auto;
+  padding: 1rem;
+}
+
+.calendar-header,
+.month-header,
+.event {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.calendar-title,
+.section-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.section-title {
+  font-size: 1rem;
+}
+
+.button {
+  padding-block: 0.4rem;
+  padding-inline: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.button-danger {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.month-nav,
+.event-actions,
+.weekend-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.status,
+.note,
+.notice {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.status-error,
+.notice-error {
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.events {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.event {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface-muted);
+}
+
+.event-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-inline-size: 0;
+}
+
+.event-main p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.event-title {
+  font-weight: 600;
+}
+
+.event-meta {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.month-grid table {
+  inline-size: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.month-grid th,
+.month-grid td {
+  border: 1px solid var(--border);
+  text-align: start;
+  vertical-align: start;
+}
+
+.month-grid th {
+  padding: 0.3rem 0.4rem;
+  background: var(--surface-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.month-grid td {
+  block-size: 5.5rem;
+  padding: 0.25rem 0.4rem;
+  overflow: hidden;
+}
+
+.day-outside {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.day-weekend,
+.month-grid th.day-weekend {
+  background: var(--weekend-bg);
+}
+
+.day-today {
+  background: var(--today-bg);
+}
+
+.day-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.25rem;
+}
+
+.day-hijri {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.day-events {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+}
+
+.day-events li {
+  padding-inline: 0.25rem;
+  margin-block-start: 0.15rem;
+  border-inline-start: 3px solid var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.weekend {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+
+.weekend-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
