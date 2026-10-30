@@ -103,7 +103,7 @@ pub enum LiveData {
 
 /// Lowercases, drops apostrophes and Arabic diacritics and tatweel, and folds
 /// Arabic spelling variants, so that الأخبار matches الاخبار and What's matches whats.
-fn normalize(text: &str) -> String {
+pub(crate) fn normalize(text: &str) -> String {
     text.chars()
         .filter(|c| !('\u{064B}'..='\u{0652}').contains(c) && !matches!(c, '\u{0640}' | '\'' | '’'))
         .map(|c| match c {
@@ -111,6 +111,7 @@ fn normalize(text: &str) -> String {
             'ة' => 'ه',
             'ى' => 'ي',
             '٠'..='٩' => char::from_u32(c as u32 - 0x0660 + 0x30).unwrap_or(c),
+            '۰'..='۹' => char::from_u32(c as u32 - 0x06F0 + 0x30).unwrap_or(c),
             _ => c,
         })
         .flat_map(char::to_lowercase)
@@ -257,11 +258,22 @@ fn trail_ok(tail: &[&str]) -> bool {
     true
 }
 
+fn split_words(normalized: &str) -> Vec<&str> {
+    normalized.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect()
+}
+
 /// Tells whether the user asks for the current time, news or weather, which a
-/// local model cannot know and must not invent.
+/// local model cannot know and must not invent. Each sentence is checked on its
+/// own, so a second sentence cannot hide the request in the first.
 pub fn asks_for_live_data(user_text: &str) -> Option<LiveData> {
-    let text = normalize(user_text);
-    let words: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    user_text
+        .split(['.', '؟', '?', '!', '\n'])
+        .find_map(live_data_in_sentence)
+}
+
+fn live_data_in_sentence(sentence: &str) -> Option<LiveData> {
+    let text = normalize(sentence);
+    let words = split_words(&text);
     if words.len() > MAX_WORDS {
         return None;
     }
@@ -274,6 +286,182 @@ pub fn asks_for_live_data(user_text: &str) -> Option<LiveData> {
     } else {
         None
     }
+}
+
+/// Tells whether the user asks to translate. A translation request is not a
+/// request to change the system language.
+pub fn asks_to_translate(user_text: &str) -> bool {
+    let text = normalize(user_text);
+    text.contains("translat") || text.contains("ترجم")
+}
+
+// Hijri words, in normalized form. "هجري" is matched inside a word, so it also
+// covers الهجري, بالهجري and الهجرية.
+const HIJRI_CUES: &[&str] = &[
+    "date", "dates", "convert", "conversion", "corresponding", "equivalent", "gregorian",
+    "تاريخ", "التاريخ", "تحويل", "حول", "يقابل", "يوافق", "يعادل", "ميلادي", "الميلادي", "ميلاديه", "الموافق", "مقابل",
+];
+
+/// Tells whether the user asks to convert a date to the Hijri calendar: a
+/// Hijri word together with a number or a word like "date" or "يقابل".
+pub fn asks_for_hijri(user_text: &str) -> bool {
+    let text = normalize(user_text);
+    let words = split_words(&text);
+    let hijri = words.iter().any(|w| *w == "hijri" || w.contains("هجري"))
+        || (words.contains(&"islamic") && words.iter().any(|w| matches!(*w, "date" | "dates" | "calendar")));
+    hijri && words.iter().any(|w| w.chars().any(|c| c.is_ascii_digit()) || HIJRI_CUES.contains(w))
+}
+
+// Religious words, in normalized form (see `normalize`). A word also matches
+// without a final "s" and, in Arabic, without و ف ب ل ك and ال in front, so
+// "Muslims" and "للإسلام" match. This is a list of words, not a classifier: it
+// prefers a false alarm to an answer, and it will miss some questions.
+const RELIGIOUS_EN: &[&str] = &[
+    "islam", "islamic", "islamist", "islamophobia", "muslim", "muslimah", "quran", "quranic", "koran", "hadith",
+    "sunnah", "sunni", "shia", "shiite", "sufi", "sufism", "fatwa", "fatwah", "sharia", "shariah", "allah", "imam",
+    "mosque", "masjid", "hajj", "umrah", "zakat", "salah", "salat", "wudu", "halal", "haram", "tarawih", "taraweeh",
+    "mufti", "jihad", "christian", "christianity", "christ", "jesus", "bible", "biblical", "gospel", "church",
+    "cathedral", "catholic", "catholicism", "protestant", "pope", "vatican", "jewish", "judaism", "torah", "talmud",
+    "rabbi", "synagogue", "hindu", "hinduism", "buddhist", "buddhism", "buddha", "sikh", "sikhism", "bahai",
+    "zoroastrian", "religion", "religious", "theology", "theological", "scripture", "scriptural", "sermon",
+    "blasphemy",
+];
+
+const RELIGIOUS_AR: &[&str] = &[
+    "اسلام", "اسلامي", "اسلاميه", "مسلم", "مسلمه", "مسلمين", "مسلمون", "مسلمات", "قران", "قراني", "قرانيه", "فتوي",
+    "فتاوي", "افتاء", "مفتي", "شريعه", "فقه", "عقيده", "وضوء", "تيمم", "صيام", "صوم", "زكاه", "حج", "تراويح",
+    "تهجد", "نبوي", "نبويه", "شيعه", "مسيحي", "مسيحيه", "مسيحيين", "نصراني", "نصرانيه", "انجيل", "يسوع", "مسيح",
+    "كنيسه", "كنائس", "كاثوليك", "كاثوليكي", "بروتستانت", "فاتيكان", "يهودي", "يهوديه", "يهود", "توراه", "تلمود",
+    "حاخام", "هندوسيه", "هندوسي", "بوذيه", "بوذي", "بوذا", "بهائيه", "اديان", "ديني", "دينيه", "دينيا", "لاهوت",
+    "مسجد", "مساجد",
+];
+
+// Words that are religious only outside a quoted title, such as a song called "Prayer".
+const RELIGIOUS_WEAK_EN: &[&str] = &["pray", "prayer", "praying", "prayed", "worship", "worshipping", "god"];
+
+const RELIGIOUS_WEAK_AR: &[&str] = &["صلاه", "صلوات", "ركعه", "ركعات"];
+
+const RELIGIOUS_PHRASES: &[&[&str]] = &[
+    &["prophet", "muhammad"],
+    &["prophet", "mohammed"],
+    &["prophet", "muhammed"],
+    &["prophet", "mohammad"],
+    &["peace", "be", "upon", "him"],
+    &["holy", "book"],
+    &["holy", "spirit"],
+    &["old", "testament"],
+    &["new", "testament"],
+    &["ten", "commandments"],
+    &["day", "of", "judgment"],
+    &["judgment", "day"],
+    &["الكتاب", "المقدس"],
+    &["ليله", "القدر"],
+    &["حديث", "نبوي"],
+    &["حديث", "شريف"],
+    &["احاديث", "نبويه"],
+    &["هل", "حرام"],
+    &["هل", "حلال"],
+    &["العمره"],
+];
+
+// Ramadan is also a calendar month, so it counts only next to one of these words.
+const RAMADAN: &[&str] = &["ramadan", "ramadhan", "ramazan", "رمضان"];
+
+const RAMADAN_CONTEXT: &[&str] = &[
+    "fast", "fasting", "rule", "ruling", "obligatory", "mandatory", "permissible", "allowed", "forbidden", "meaning",
+    "significance", "importance", "virtue", "reward", "tarawih", "taraweeh", "prayer", "pray",
+    "صيام", "صوم", "حكم", "احكام", "فضل", "فضائل", "تراويح", "تهجد", "ثواب", "واجب", "يجوز", "حرام", "حلال", "معني",
+    "اهميه", "قيام",
+];
+
+/// The word as written and the forms it may be listed under.
+fn forms(word: &str) -> Vec<&str> {
+    let mut out = vec![word];
+    if let Some(rest) = word.strip_suffix('s') {
+        out.push(rest);
+    }
+    for prefixes in [&["لل", "و", "ف", "ب", "ل", "ك"][..], &["لل", "و", "ف", "ب", "ل", "ك"][..], &["ال"][..]] {
+        for form in out.clone() {
+            for prefix in prefixes {
+                if let Some(rest) = form.strip_prefix(prefix) {
+                    if rest.chars().count() >= 2 && !out.contains(&rest) {
+                        out.push(rest);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn has_term(words: &[&str], terms: &[&str]) -> bool {
+    words.iter().any(|w| forms(w).iter().any(|f| terms.contains(f)))
+}
+
+fn has_phrase(words: &[&str], phrases: &[&[&str]]) -> bool {
+    phrases.iter().any(|phrase| words.windows(phrase.len()).any(|w| w == *phrase))
+}
+
+/// "Islamic date" and "التقويم الإسلامي" name the Hijri calendar, not the faith.
+fn without_calendar_uses<'a>(words: &[&'a str]) -> Vec<&'a str> {
+    (0..words.len())
+        .filter(|&i| {
+            let next = words.get(i + 1).copied();
+            let prev = i.checked_sub(1).map(|j| words[j]);
+            let calendar = (words[i] == "islamic" && matches!(next, Some("date" | "dates" | "calendar")))
+                || (forms(words[i]).iter().any(|f| matches!(*f, "اسلامي" | "اسلاميه"))
+                    && matches!(prev, Some("تقويم" | "التقويم")));
+            !calendar
+        })
+        .map(|i| words[i])
+        .collect()
+}
+
+/// Cuts out text in double quotes, so a quoted title is not read as a question.
+fn strip_quoted(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut close = None;
+    for (i, &c) in chars.iter().enumerate() {
+        if let Some(end) = close {
+            if c == end {
+                close = None;
+                out.push(' ');
+            }
+            continue;
+        }
+        let end = match c {
+            '"' => '"',
+            '“' => '”',
+            '«' => '»',
+            _ => {
+                out.push(c);
+                continue;
+            }
+        };
+        if chars[i + 1..].contains(&end) {
+            close = Some(end);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Tells whether the text is about religion, in English or Arabic. ScarfeeOS
+/// gives no religious content, so the assistant declines these. Hijri dates,
+/// "Ramadan" as a month and names like Islamabad are not religious content.
+pub fn asks_religious(user_text: &str) -> bool {
+    let text = normalize(user_text);
+    let all = without_calendar_uses(&split_words(&text));
+    let unquoted = normalize(&strip_quoted(user_text));
+    let unquoted = without_calendar_uses(&split_words(&unquoted));
+    has_term(&all, RELIGIOUS_EN)
+        || has_term(&all, RELIGIOUS_AR)
+        || has_phrase(&all, RELIGIOUS_PHRASES)
+        || has_term(&unquoted, RELIGIOUS_WEAK_EN)
+        || has_term(&unquoted, RELIGIOUS_WEAK_AR)
+        || (has_term(&all, RAMADAN) && has_term(&all, RAMADAN_CONTEXT))
 }
 
 #[cfg(test)]
@@ -417,5 +605,109 @@ mod tests {
     fn long_text_is_not_a_request() {
         let text = "Here is an article. The latest news says that nothing happened in the city at all today and people went home.";
         assert_eq!(asks_for_live_data(text), None);
+    }
+
+    #[test]
+    fn religious_questions_are_caught() {
+        for text in [
+            "What are the five pillars of Islam?",
+            "ما هي أركان الإسلام الخمسة؟",
+            "Explain Surah Al-Fatiha from the Quran",
+            "Who wrote the Bible?",
+            "ما تفسير هذه الآية من القرآن الكريم",
+            "ما هو الإنجيل؟",
+            "Is it a sin to skip the midday prayer?",
+            "What is the ruling on praying while traveling?",
+            "ما حكم الصلاة في السفر",
+            "Is this fatwa valid?",
+            "هل هذه الفتوى صحيحة",
+            "Tell me about Buddhism and Hinduism",
+            "What do Jewish people believe?",
+            "ما هي اليهودية",
+            "Can Muslims eat this? Is it halal?",
+            "هل يجوز للمسلمين ذلك",
+            "What does the Prophet Muhammad say about trade?",
+            "Is fasting in Ramadan obligatory?",
+            "ما حكم صيام رمضان",
+            "Does God exist?",
+            "what does my religion say",
+            "ما هو الإسلام",
+            "اشرح لي أحكام الصلاة والزكاة",
+        ] {
+            assert!(asks_religious(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn ordinary_questions_are_not_religious() {
+        for text in [
+            "Open Islamabad on the map",
+            "What is the population of Islamabad?",
+            "Play \"Livin' on a Prayer\" by Bon Jovi",
+            "شغل أغنية «صلاة» لفيروز",
+            "When does Ramadan start in 2026?",
+            "كم يوم باقي على رمضان",
+            "What is the Hijri date for 1 January 2026?",
+            "ما التاريخ الهجري الذي يقابل 1 يناير 2026 ميلادي تقريبًا؟",
+            "Convert 1 January 2026 to the Islamic calendar",
+            "Convert to the Islamic date for tomorrow",
+            "حول التاريخ إلى التقويم الإسلامي",
+            "ما هو شهر ذو الحجة في التقويم الهجري",
+            "Explain what a VPN does",
+            "اشرح لي الطقس والمناخ",
+            "Remind me to call the bank tomorrow",
+            "ذكرني بالاجتماع غدا إن شاء الله",
+            "سداد الدين الشهري",
+            "Schedule a meeting with Sara on Sunday",
+            "",
+        ] {
+            assert!(!asks_religious(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn religious_words_match_with_endings_and_prefixes() {
+        assert!(asks_religious("Islam's history"));
+        assert!(asks_religious("What do Christians believe?"));
+        assert!(asks_religious("ما رأيك في الاسلام"));
+        assert!(asks_religious("تحدث عن للإسلام"));
+        assert!(asks_religious("وبالقرآن"));
+        assert!(!asks_religious("Islamabadis"));
+    }
+
+    #[test]
+    fn each_sentence_is_checked_for_live_data() {
+        assert_eq!(asks_for_live_data("وش الأخبار اليوم؟ ابي تلخص لي أهم شي."), Some(LiveData::News));
+        assert_eq!(asks_for_live_data("What's the weather today? Please be brief."), Some(LiveData::Weather));
+        assert_eq!(asks_for_live_data("Hi!\nWhat time is it?"), Some(LiveData::Time));
+        assert_eq!(asks_for_live_data("Explain what a VPN does"), None);
+        assert_eq!(asks_for_live_data("اشرح لي الطقس والمناخ"), None);
+        assert_eq!(asks_for_live_data("Explain what a VPN does. Why is it useful?"), None);
+    }
+
+    #[test]
+    fn hijri_requests() {
+        for text in [
+            "ما التاريخ الهجري الذي يقابل 1 يناير 2026 ميلادي تقريبًا؟",
+            "What is the Hijri date for 1 January 2026?",
+            "Convert January 1, 2026 to Hijri",
+            "what is 2026-01-01 in the Islamic calendar",
+            "كم يوافق ٢٠٢٦/١/١ بالهجري",
+            "تحويل التاريخ الهجري",
+        ] {
+            assert!(asks_for_hijri(text), "{text}");
+        }
+        for text in ["Remind me on 1 January 2026", "What is the date today?", "ما هو التاريخ اليوم", "Open the Hijri app", ""] {
+            assert!(!asks_for_hijri(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn translation_requests() {
+        for text in ["Translate to Arabic: good morning", "ترجم هذه الجملة", "ترجملي الجملة", "Give me a translation"] {
+            assert!(asks_to_translate(text), "{text}");
+        }
+        assert!(!asks_to_translate("Switch the system language to Arabic"));
+        assert!(!asks_to_translate("غير لغة النظام إلى العربية"));
     }
 }
