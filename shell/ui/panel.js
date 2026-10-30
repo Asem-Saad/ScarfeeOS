@@ -129,16 +129,68 @@
       }
     }
 
-    function renderMessage(isUser, blocks, pendingMessage) {
+    function renderFiles(block) {
+      const list = el('ul', 'message-files');
+      for (const file of block.items) {
+        const item = el('li', 'message-file');
+        const name = el('bdi', null, file.name);
+        name.dir = 'auto';
+        item.append(name);
+        if (file.label) {
+          item.append(el('span', 'message-file-kind', file.label));
+        }
+        list.append(item);
+      }
+      return list;
+    }
+
+    // Confirm and Cancel for a call the core is holding. A clarification also asks for the time.
+    function renderActions(block, message) {
+      const row = el('div', 'message-actions');
+      const locked = message.answered === true || waiting;
+      let timeInput = null;
+      if (block.clarify) {
+        timeInput = el('input', 'message-time');
+        timeInput.type = 'time';
+        timeInput.value = message.chosenTime || block.clarify.time;
+        timeInput.disabled = locked;
+        timeInput.setAttribute('aria-label', t('assistant-clarify-time-label'));
+        timeInput.addEventListener('input', () => {
+          message.chosenTime = timeInput.value;
+        });
+        row.append(timeInput);
+      }
+      const confirm = el('button', 'button button-primary', t('assistant-confirm'));
+      const cancel = el('button', 'button', t('assistant-cancel'));
+      for (const button of [confirm, cancel]) {
+        button.type = 'button';
+        button.disabled = locked;
+        row.append(button);
+      }
+      confirm.addEventListener('click', () => {
+        const chosen = timeInput ? timeInput.value : '';
+        answer(message, chosen ? { confirm: block.actionId, time: `${block.clarify.date}T${chosen}` } : { confirm: block.actionId });
+      });
+      cancel.addEventListener('click', () => answer(message, { cancel: block.actionId }));
+      return row;
+    }
+
+    function renderMessage(isUser, blocks, pendingMessage, message) {
       const item = el('li', isUser ? 'message message-user' : 'message message-assistant');
       const meta = el('div', 'message-meta');
       meta.append(el('span', null, isUser ? t('assistant-role-user') : t('assistant-role-assistant')));
       item.append(meta);
       for (const block of blocks) {
-        const body = el('p', `message-text message-${block.tone}`);
-        body.dir = 'auto';
-        renderText(body, block.text);
-        item.append(body);
+        if (block.tone === 'files') {
+          item.append(renderFiles(block));
+        } else if (block.tone === 'actions') {
+          item.append(renderActions(block, message));
+        } else {
+          const body = el('p', `message-text message-${block.tone}`);
+          body.dir = 'auto';
+          renderText(body, block.text);
+          item.append(body);
+        }
       }
       if (pendingMessage) {
         item.setAttribute('aria-busy', 'true');
@@ -162,7 +214,7 @@
         if (message.role === 'user') {
           messageList.append(renderMessage(true, [{ tone: 'reply', text: message.text }]));
         } else if (message.response) {
-          messageList.append(renderMessage(false, describeResponse(message.response, t, i18n.getLanguage(), settings.get())));
+          messageList.append(renderMessage(false, describeResponse(message.response, t, i18n.getLanguage(), settings.get()), null, message));
         } else {
           messageList.append(renderMessage(false, [{ tone: 'waiting', text: t('assistant-waiting') }], message));
         }
@@ -175,13 +227,13 @@
       renderMessages();
     }
 
-    function ask(text, language) {
+    function post(body) {
       return fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, language }),
+        body: JSON.stringify(body),
       })
-        .then((response) => response.text().then((body) => responseFromHttp(response.status, body)))
+        .then((response) => response.text().then((text) => responseFromHttp(response.status, text)))
         .catch(() => ({ kind: 'unreachable' }));
     }
 
@@ -190,23 +242,47 @@
       sendButton.disabled = value;
     }
 
+    // A language change the core reports goes through the same switch as the language setting.
+    function followLanguageResult(response) {
+      const result = response.kind === 'run' && response.result;
+      if (result && result.ok === true && result.type === 'language' && Object.keys(catalogs).includes(result.lang) && languageSelect.value !== result.lang) {
+        languageSelect.value = result.lang;
+        changeSetting('language', languageSelect);
+      }
+    }
+
+    function converse(body) {
+      const reply = { role: 'assistant', startedAt: Date.now(), response: null };
+      active.messages.push(reply);
+      setWaiting(true);
+      elapsedTimer = setInterval(() => updateElapsed(reply), 1000);
+      render();
+      post(body).then((response) => {
+        clearInterval(elapsedTimer);
+        reply.response = response;
+        setWaiting(false);
+        followLanguageResult(response);
+        render();
+      });
+    }
+
     function send() {
       const text = input.value.trim();
       if (!text || waiting) {
         return;
       }
-      const reply = { role: 'assistant', startedAt: Date.now(), response: null };
-      active.messages.push({ role: 'user', text }, reply);
+      active.messages.push({ role: 'user', text });
       input.value = '';
-      setWaiting(true);
-      elapsedTimer = setInterval(() => updateElapsed(reply), 1000);
-      render();
-      ask(text, languageSelect.value).then((response) => {
-        clearInterval(elapsedTimer);
-        reply.response = response;
-        setWaiting(false);
-        render();
-      });
+      converse({ text, language: languageSelect.value });
+    }
+
+    // Each held call can be answered once, so its buttons stay disabled after the first click.
+    function answer(message, body) {
+      if (message.answered === true || waiting) {
+        return;
+      }
+      message.answered = true;
+      converse(body);
     }
 
     function setLanguage(lang) {

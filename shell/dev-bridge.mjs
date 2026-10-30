@@ -93,7 +93,7 @@ function createCore({ corePath, timeoutMs }) {
     return state;
   }
 
-  function exchange(text, language) {
+  function exchange(fields) {
     if (!current) {
       current = start();
     }
@@ -117,13 +117,13 @@ function createCore({ corePath, timeoutMs }) {
           }
         },
       };
-      state.child.stdin.write(`${JSON.stringify({ id, text, language })}\n`);
+      state.child.stdin.write(`${JSON.stringify({ ...fields, id })}\n`);
     });
   }
 
   return {
-    ask(text, language) {
-      const run = () => exchange(text, language);
+    ask(fields) {
+      const run = () => exchange(fields);
       const result = queue.then(run, run);
       queue = result.catch(() => {});
       return result;
@@ -163,6 +163,39 @@ async function resolveInside(root, urlPath) {
     throw new BridgeError('forbidden', 403);
   }
   return real;
+}
+
+// What /chat takes: a turn, or the answer to a held action. Only these fields reach the core, never an `id`.
+function chatFields(body) {
+  const given = (key) => body && typeof body === 'object' && Object.hasOwn(body, key);
+  const kinds = ['text', 'confirm', 'cancel'].filter(given);
+  const bad = () =>
+    new BridgeError(
+      'expected {"text": string, "language": "en" | "ar"}, {"confirm": action id, "time"?: string} or {"cancel": action id}',
+      400
+    );
+  if (kinds.length !== 1 || (given('language') && kinds[0] !== 'text') || (given('time') && kinds[0] !== 'confirm')) {
+    throw bad();
+  }
+  if (kinds[0] === 'text') {
+    if (typeof body.text !== 'string' || typeof body.language !== 'string' || !LANGUAGES.has(body.language)) {
+      throw bad();
+    }
+    return { text: body.text, language: body.language };
+  }
+  if (typeof body[kinds[0]] !== 'string' || !body[kinds[0]]) {
+    throw bad();
+  }
+  if (kinds[0] === 'cancel') {
+    return { cancel: body.cancel };
+  }
+  if (!given('time')) {
+    return { confirm: body.confirm };
+  }
+  if (typeof body.time !== 'string') {
+    throw bad();
+  }
+  return { confirm: body.confirm, time: body.time };
 }
 
 function send(res, status, headers, body) {
@@ -223,10 +256,7 @@ export function createBridge({
       }
       throw new BridgeError('request body is not valid JSON', 400);
     }
-    if (!body || typeof body.text !== 'string' || typeof body.language !== 'string' || !LANGUAGES.has(body.language)) {
-      throw new BridgeError('expected {"text": string, "language": "en" | "ar"}', 400);
-    }
-    sendJson(res, 200, await core.ask(body.text, body.language));
+    sendJson(res, 200, await core.ask(chatFields(body)));
   }
 
   async function serveStatic(req, res, pathname) {

@@ -6,6 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 class Node {
   constructor(tag) {
@@ -40,21 +41,28 @@ class Node {
 const read = (...parts) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+// Loads the scripts exactly as index.html lists them, as classic scripts in one global scope (no require,
+// no module), against a fake DOM that only answers for ids that index.html really has.
 async function loadPanel(chat, storage) {
+  const html = read('index.html');
+  const known = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
   const ids = {};
-  for (const id of ['conversation-list', 'message-list', 'message-input', 'language', 'composer', 'new-conversation', 'setting-digits', 'setting-calendar', 'setting-week-start']) ids[id] = new Node(id);
+  for (const id of known) ids[id] = new Node(id);
   ids.language.value = 'en';
   const sendButton = new Node('button');
   const posts = [];
-  global.document = {
+  const document = {
     documentElement: { lang: '', dir: '' },
     querySelectorAll: () => [],
-    getElementById: (id) => ids[id],
+    getElementById: (id) => {
+      assert.ok(known.has(id), `panel.js asks for #${id}, which index.html does not have`);
+      return ids[id];
+    },
     querySelector: (selector) => (selector === '#composer button[type="submit"]' ? sendButton : null),
     createElement: (tag) => new Node(tag),
     createTextNode: (text) => { const n = new Node('#text'); n.nodeText = text; return n; },
   };
-  global.fetch = async (url, options) => {
+  const fetch = async (url, options) => {
     if (url.startsWith('../../locales/')) {
       const lang = url.split('/')[3];
       return { text: async () => read('..', '..', 'locales', lang, 'scarfeeos.ftl') };
@@ -64,32 +72,25 @@ async function loadPanel(chat, storage) {
     assert.strictEqual(options.method, 'POST');
     return chat();
   };
-  if (storage === undefined) {
-    delete global.localStorage;
-  } else if (storage === 'throws') {
-    Object.defineProperty(global, 'localStorage', { configurable: true, get() { throw new Error('SecurityError'); } });
-  } else {
-    Object.defineProperty(global, 'localStorage', { configurable: true, value: storage });
+  const sandbox = { document, fetch, console, setInterval, clearInterval, setTimeout, Date };
+  if (storage === 'throws') {
+    Object.defineProperty(sandbox, 'localStorage', { get() { throw new Error('SecurityError'); } });
+  } else if (storage !== undefined) {
+    sandbox.localStorage = storage;
   }
-  global.ScarfeeSettings = require('./settings.js');
-  global.ScarfeeI18n = require('./i18n.js');
-  global.ScarfeeRender = require('./render.js');
-  delete require.cache[require.resolve('./panel.js')];
-  require('./panel.js');
+  const context = vm.createContext(sandbox);
+  const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepStrictEqual(scripts, ['i18n.js', 'settings.js', 'render.js', 'panel.js']);
+  for (const script of scripts) {
+    vm.runInContext(read(script), context, { filename: script });
+  }
   await tick();
   await tick();
-  return { ids, sendButton, posts };
+  return { ids, sendButton, posts, document };
 }
 
 const submit = (ids) => ids.composer.listeners.submit({ preventDefault() {} });
 const shown = (ids) => ids['message-list'].textContent.replace(/[⁨⁩]/g, '');
-
-test.after(() => {
-  delete global.document;
-  delete global.fetch;
-  delete global.localStorage;
-  delete global.ScarfeeSettings;
-});
 
 function memoryStorage(initial) {
   const data = new Map(Object.entries(initial || {}));
@@ -129,7 +130,7 @@ test('sending shows a waiting state, blocks a second send, then shows the answer
 });
 
 test('the answer is shown again in the other language when the language changes', async () => {
-  const { ids } = await loadPanel(async () => ({ status: 200, text: async () => JSON.stringify({ kind: 'declined' }) }));
+  const { ids, document } = await loadPanel(async () => ({ status: 200, text: async () => JSON.stringify({ kind: 'declined' }) }));
   ids['message-input'].value = 'question';
   submit(ids);
   await tick();
@@ -138,7 +139,7 @@ test('the answer is shown again in the other language when the language changes'
   ids.language.value = 'ar';
   ids.language.listeners.change();
   assert.match(shown(ids), /لا يجيب ScarfeeOS عن الأسئلة الدينية/);
-  assert.strictEqual(global.document.documentElement.dir, 'rtl');
+  assert.strictEqual(document.documentElement.dir, 'rtl');
 });
 
 test('model text lands in a text node, a bridge failure is an error, and sending works again after it', async () => {
@@ -218,7 +219,7 @@ test('Arabic starts with Western digits, and the saved settings are used on the 
   assert.strictEqual(again.ids['setting-digits'].value, 'eastern');
   assert.strictEqual(again.ids['setting-calendar'].value, 'both');
   assert.strictEqual(again.ids['setting-week-start'].value, 'saturday');
-  assert.strictEqual(global.document.documentElement.dir, 'rtl');
+  assert.strictEqual(again.document.documentElement.dir, 'rtl');
 });
 
 test('settings still work when storage is missing, blocked or throws on write', async () => {
@@ -244,4 +245,204 @@ test('model text, URLs and file names keep their digits in either setting', asyn
   assert.ok(shown(ids).includes(reply.text));
   assert.ok(shown(ids).includes('file 123'));
   assert.doesNotMatch(shown(ids), /[٠-٩]/);
+});
+
+// ---- results and buttons ----
+
+const reply = (body, status = 200) => ({ status, text: async () => JSON.stringify(body) });
+// Answers the requests one after another, as the core would.
+const sequence = (...bodies) => { const left = [...bodies]; return async () => reply(left.shift()); };
+const run = (tool, args, result) => ({ kind: 'run', tool, arguments: args, result });
+const buttons = (ids) => ids['message-list'].all((n) => n.tagName === 'button');
+const button = (ids, label) => buttons(ids).find((b) => b.textContent === label);
+const ask = async (ids, text = 'x') => { ids['message-input'].value = text; submit(ids); await tick(); await tick(); };
+const click = async (node) => { node.listeners.click(); await tick(); await tick(); };
+const ID = 'f'.repeat(32);
+const SHOWN_TAGS = ['message-list', 'li', 'ul', 'div', 'span', 'p', 'bdi', 'input', 'button', '#text'];
+const unknownTags = (ids) => [...new Set(ids['message-list'].all(() => true).map((n) => n.tagName))].filter((tag) => !SHOWN_TAGS.includes(tag));
+
+test('a run shows what happened for each result type, and never says that nothing was done', async () => {
+  const cases = [
+    [run('open_app', { name: 'calc' }, { ok: true, type: 'opened', app: { id: 'calc.desktop', name: 'Calculator' } }), /Opened Calculator\./],
+    [run('create_reminder', { text: 'x', time: '2026-10-31T10:00:00', repeat: null }, { ok: true, type: 'event', event: { uid: 'u', summary: 'call the bank', start: '2026-10-31T10:00:00', attendees: [], repeat: null } }),
+      /Event created: “call the bank” at 2026-10-31 10:00\./],
+    [run('open_app', { name: 'calc' }, { ok: false, error: { code: 'app_not_found', message: 'x', closest: ['Calculator', 'Calendar'] } }),
+      /I could not find an app called calc\.[\s\S]*Closest app names: Calculator, Calendar/],
+    [run('list_files', { path: '/etc' }, { ok: false, error: { code: 'outside_root', message: 'x' } }), /outside the folders I am allowed to use/],
+    [run('list_files', { path: '/x' }, { ok: true, type: 'listing', path: '/x', entries: [], truncated: false }), /\/x is empty\./],
+  ];
+  for (const [response, expected] of cases) {
+    const { ids } = await loadPanel(sequence(response));
+    await ask(ids);
+    assert.match(shown(ids), expected);
+    assert.doesNotMatch(shown(ids), /Nothing was done|not connected/);
+    assert.strictEqual(buttons(ids).length, 0);
+    assert.deepStrictEqual(unknownTags(ids), []);
+  }
+});
+
+test('a listing shows names in bidi text, 20 at most, and the digits setting leaves them alone', async () => {
+  const names = ['report 2026.txt', 'تقرير ٢٠٢٦.pdf', '<img src=x onerror=alert(1)>.txt', ...Array.from({ length: 27 }, (_, i) => `file ${i}`)];
+  const entries = names.map((name) => ({ path: `/home/u/Documents/${name}`, kind: 'file' }));
+  const listing = run('list_files', { path: '/home/u/Documents' }, { ok: true, type: 'listing', path: '/home/u/Documents', entries, truncated: false });
+  const { ids } = await loadPanel(sequence(listing), memoryStorage());
+  await ask(ids);
+  const files = () => ids['message-list'].all((n) => n.className === 'message-file').map((li) => li.children[0]);
+  assert.strictEqual(files().length, 20);
+  assert.ok(files().every((n) => n.tagName === 'bdi'));
+  assert.deepStrictEqual(files().map((n) => n.textContent), names.slice(0, 20));
+  assert.ok(files().every((n) => n.dir === 'auto'), 'each name is isolated and takes its own direction');
+  assert.ok(ids['message-list'].all((n) => n.tagName === 'ul').length === 1);
+  assert.match(shown(ids), /10 more not shown\./);
+  assert.ok(shown(ids).includes('<img src=x onerror=alert(1)>.txt'));
+  assert.deepStrictEqual(unknownTags(ids), []);
+
+  change(ids['setting-digits'], 'eastern');
+  assert.deepStrictEqual(files().map((n) => n.textContent), names.slice(0, 20), 'names keep their digits');
+  assert.match(shown(ids), /١٠ more not shown\./);
+  change(ids.language, 'ar');
+  assert.deepStrictEqual(files().map((n) => n.textContent), names.slice(0, 20));
+});
+
+test('a search shows full paths and the notes about what is missing', async () => {
+  const search = run('search_files', { query: 'report' }, {
+    ok: true, type: 'search', truncated: true, unreadable: 3,
+    matches: [{ path: '/home/u/Downloads/report.pdf', kind: 'file' }, { path: '/home/u/Documents/تقارير', kind: 'dir' }],
+  });
+  const { ids } = await loadPanel(sequence(search));
+  await ask(ids);
+  const text = shown(ids);
+  assert.match(text, /Files matching “report”:/);
+  assert.ok(text.includes('/home/u/Downloads/report.pdf') && text.includes('/home/u/Documents/تقارير'));
+  assert.match(text, /folder/);
+  assert.match(text, /There may be more than this/);
+  assert.match(text, /Folders that could not be read: 3\./);
+});
+
+test('a language change from the core goes through the panel\'s language switch', async () => {
+  const storage = memoryStorage();
+  const { ids, posts, document } = await loadPanel(sequence(
+    run('set_language', { lang: 'ar' }, { ok: true, type: 'language', lang: 'ar' }),
+    { kind: 'declined' },
+    run('set_language', { lang: 'xx' }, { ok: true, type: 'language', lang: 'xx' }),
+    run('set_language', { lang: 'en' }, { ok: false, error: { code: 'unsupported', message: 'x' } }),
+  ), storage);
+  await ask(ids, 'switch to Arabic');
+  assert.strictEqual(ids.language.value, 'ar');
+  assert.strictEqual(document.documentElement.dir, 'rtl');
+  assert.strictEqual(JSON.parse(storage.data.get('scarfeeos.panel.settings')).language, 'ar');
+  assert.match(shown(ids), /أصبحت لغة النظام الآن العربية\./);
+  await ask(ids, 'next');
+  assert.strictEqual(posts[1].language, 'ar');
+
+  await ask(ids, 'bogus');
+  assert.strictEqual(ids.language.value, 'ar', 'an unknown language is ignored');
+  await ask(ids, 'failed');
+  assert.strictEqual(ids.language.value, 'ar', 'a failed run changes nothing');
+});
+
+test('Confirm sends {confirm: action_id}, shows the result, and the buttons stay disabled', async () => {
+  let answer;
+  let calls = 0;
+  const first = reply({ kind: 'needs_confirmation', tool: 'set_language', arguments: { lang: 'ar' }, action_id: ID });
+  const { ids, posts, sendButton } = await loadPanel(async () => {
+    calls += 1;
+    return calls === 1 ? first : new Promise((resolve) => { answer = resolve; });
+  });
+  await ask(ids, 'switch to Arabic');
+  assert.match(shown(ids), /This changes a setting\. Do you want to go ahead: change the system language to العربية\?/);
+  assert.deepStrictEqual(buttons(ids).map((b) => [b.textContent, b.disabled]), [['Confirm', false], ['Cancel', false]]);
+  assert.strictEqual(ids['message-list'].all((n) => n.tagName === 'input').length, 0);
+
+  await click(button(ids, 'Confirm'));
+  assert.deepStrictEqual(posts[1], { confirm: ID });
+  assert.ok(buttons(ids).every((b) => b.disabled), 'disabled while waiting');
+  assert.strictEqual(sendButton.disabled, true);
+  assert.match(shown(ids), /Working on it/);
+
+  answer(reply(run('set_language', { lang: 'ar' }, { ok: true, type: 'language', lang: 'ar' })));
+  await tick();
+  await tick();
+  assert.strictEqual(ids.language.value, 'ar');
+  assert.match(shown(ids), /أصبحت لغة النظام الآن العربية\./);
+  assert.deepStrictEqual(buttons(ids).map((b) => [b.textContent, b.disabled]), [['تأكيد', true], ['إلغاء', true]], 'still disabled, now in Arabic');
+  assert.strictEqual(sendButton.disabled, false);
+
+  await click(button(ids, 'تأكيد'));
+  await click(button(ids, 'إلغاء'));
+  assert.strictEqual(posts.length, 2, 'a used button sends nothing again');
+});
+
+test('Cancel sends {cancel: action_id} and shows that it was cancelled', async () => {
+  const { ids, posts } = await loadPanel(sequence(
+    { kind: 'needs_confirmation', tool: 'set_language', arguments: { lang: 'ar' }, action_id: ID },
+    { kind: 'cancelled' },
+  ));
+  await ask(ids);
+  await click(button(ids, 'Cancel'));
+  assert.deepStrictEqual(posts[1], { cancel: ID });
+  assert.match(shown(ids), /Cancelled\. Nothing was done\./);
+  assert.ok(buttons(ids).every((b) => b.disabled));
+  assert.strictEqual(ids.language.value, 'en');
+});
+
+test('a clarification asks for a time, and Confirm sends the chosen one', async () => {
+  const held = { kind: 'needs_clarification', tool: 'create_reminder', arguments: { text: 'call', time: '2026-10-30T11:00:00', repeat: null }, action_id: ID };
+  const event = (start) => run('create_reminder', held.arguments, { ok: true, type: 'event', event: { uid: 'u', summary: 'call', start, attendees: [], repeat: null } });
+  const { ids, posts } = await loadPanel(sequence(held, event('2026-10-30T15:30:00')));
+  await ask(ids, 'remind me at 11');
+  const [time] = ids['message-list'].all((n) => n.tagName === 'input');
+  assert.strictEqual(time.type, 'time');
+  assert.strictEqual(time.value, '11:00');
+  assert.ok(time.attributes['aria-label']);
+  time.value = '15:30';
+  time.listeners.input();
+  change(ids['setting-digits'], 'western');
+  assert.strictEqual(ids['message-list'].all((n) => n.tagName === 'input')[0].value, '15:30', 'the choice survives a redraw');
+
+  await click(button(ids, 'Confirm'));
+  assert.deepStrictEqual(posts[1], { confirm: ID, time: '2026-10-30T15:30' });
+  assert.match(shown(ids), /Event created: “call” at 2026-10-30 15:30\./);
+  const [after] = ids['message-list'].all((n) => n.tagName === 'input');
+  assert.deepStrictEqual([after.disabled, after.value], [true, '15:30']);
+  assert.ok(buttons(ids).every((b) => b.disabled));
+});
+
+test('Confirm on a clarification without a change sends the guessed time, and Cancel sends no time', async () => {
+  const held = { kind: 'needs_clarification', tool: 'create_reminder', arguments: { text: 'call', time: '2026-10-30T11:00:00', repeat: null }, action_id: ID };
+  const kept = await loadPanel(sequence(held, { kind: 'error', message: 'unknown or already used action id' }));
+  await ask(kept.ids);
+  await click(button(kept.ids, 'Confirm'));
+  assert.deepStrictEqual(kept.posts[1], { confirm: ID, time: '2026-10-30T11:00' });
+  assert.match(shown(kept.ids), /Something went wrong: unknown or already used action id/);
+
+  const cancelled = await loadPanel(sequence(held, { kind: 'cancelled' }));
+  await ask(cancelled.ids);
+  await click(button(cancelled.ids, 'Cancel'));
+  assert.deepStrictEqual(cancelled.posts[1], { cancel: ID });
+  assert.ok(cancelled.ids['message-list'].all((n) => n.tagName === 'input').every((n) => n.disabled));
+});
+
+test('buttons are off while a message is being answered, and a held call without an id has no buttons', async () => {
+  let answer;
+  let calls = 0;
+  const { ids, posts } = await loadPanel(async () => {
+    calls += 1;
+    if (calls === 1) return reply({ kind: 'needs_confirmation', tool: 'set_language', arguments: { lang: 'ar' }, action_id: ID });
+    return new Promise((resolve) => { answer = resolve; });
+  });
+  await ask(ids);
+  ids['message-input'].value = 'another question';
+  submit(ids);
+  assert.ok(buttons(ids).every((b) => b.disabled));
+  await click(button(ids, 'Confirm'));
+  assert.strictEqual(posts.length, 2, 'no confirm while another request is running');
+  answer(reply({ kind: 'declined' }));
+  await tick();
+  await tick();
+  assert.ok(buttons(ids).every((b) => !b.disabled), 'the held call is still open');
+
+  const none = await loadPanel(sequence({ kind: 'needs_confirmation', tool: 'set_language', arguments: { lang: 'ar' } }));
+  await ask(none.ids);
+  assert.strictEqual(buttons(none.ids).length, 0);
 });

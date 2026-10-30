@@ -14,6 +14,7 @@ const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const request = JSON.parse(line);
   const { id, text } = request;
+  if (text === undefined) { out({ id, kind: 'echo', request }); return; }
   inflight += 1;
   const reply = () => {
     out({ id, kind: 'reply', text, language: request.language, pid: process.pid, inflight, foreign_words: [] });
@@ -72,6 +73,43 @@ test('a request gets the matching response, and Arabic survives the round trip',
     const arabic = await chat(base, 'مرحبا بك، كيف الحال؟', 'ar');
     assert.deepStrictEqual([arabic.body.text, arabic.body.language], ['مرحبا بك، كيف الحال؟', 'ar']);
     assert.ok(arabic.body.id > english.body.id, 'ids are new for every request');
+  });
+});
+
+test('confirm, confirm with a time, and cancel reach the core with only their own fields', async () => {
+  await withBridge({}, async (base) => {
+    const post = (body) =>
+      fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(async (res) => ({ status: res.status, body: await res.json() }));
+    const sent = async (body) => {
+      const { status, body: answer } = await post(body);
+      assert.strictEqual(status, 200);
+      assert.strictEqual(answer.kind, 'echo');
+      const { id, ...fields } = answer.request;
+      assert.strictEqual(typeof id, 'number');
+      assert.strictEqual(answer.id, id);
+      return fields;
+    };
+    assert.deepStrictEqual(await sent({ confirm: 'abc123' }), { confirm: 'abc123' });
+    assert.deepStrictEqual(await sent({ confirm: 'abc123', time: '2026-10-30T15:30' }), { confirm: 'abc123', time: '2026-10-30T15:30' });
+    assert.deepStrictEqual(await sent({ cancel: 'abc123' }), { cancel: 'abc123' });
+    const forged = await post({ cancel: 'abc123', id: 99, upcoming: true, delete_event: 'u' });
+    assert.notStrictEqual(forged.body.request.id, 99);
+    assert.deepStrictEqual(Object.keys(forged.body.request).sort(), ['cancel', 'id']);
+    assert.strictEqual((await chat(base, 'a text turn still works')).body.kind, 'reply');
+  });
+});
+
+test('confirm and cancel requests that are not well formed are refused before the core', async () => {
+  await withBridge({}, async (base) => {
+    for (const body of [
+      { confirm: '' }, { confirm: 5 }, { cancel: null }, { cancel: '' }, { confirm: 'a', time: 7 }, { cancel: 'a', time: '10:00' },
+      { confirm: 'a', cancel: 'a' }, { confirm: 'a', text: 'hi', language: 'en' }, { confirm: 'a', language: 'en' }, { text: 'hi', language: 'en', time: '10:00' },
+      { time: '2026-10-30T15:30' }, {},
+    ]) {
+      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      assert.strictEqual(res.status, 400, JSON.stringify(body));
+    }
   });
 });
 
