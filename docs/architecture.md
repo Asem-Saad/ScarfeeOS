@@ -1,7 +1,7 @@
 # Architecture
 
 ## Base
-A custom Fedora spin (built with kiwi or lorax). Fedora provides the kernel, drivers, networking and power management. AIOS adds the shell, AI core and apps.
+A custom Fedora spin (built with kiwi or lorax). Fedora provides the kernel, drivers, networking and power management. ScarfeeOS adds the shell, AI core and apps.
 
 ## Components
 ```

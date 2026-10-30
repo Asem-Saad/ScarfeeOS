@@ -1,4 +1,4 @@
-/// Languages AIOS supports as main languages.
+/// Languages ScarfeeOS supports as main languages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     English,

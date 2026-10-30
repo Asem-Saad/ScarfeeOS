@@ -1,4 +1,4 @@
-# AIOS
+# ScarfeeOS
 
 An AI-first operating system for laptops. Talk to it or type to it, in **English or Arabic**.
 
@@ -14,7 +14,7 @@ An AI-first operating system for laptops. Talk to it or type to it, in **English
 
 ## Approach
 
-AIOS is a Linux-based system (Fedora as the base), not a new kernel. See [docs/architecture.md](docs/architecture.md).
+ScarfeeOS is a Linux-based system (Fedora as the base), not a new kernel. See [docs/architecture.md](docs/architecture.md).
 
 ## Repository layout
 

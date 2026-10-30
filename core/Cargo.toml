@@ -1,8 +1,8 @@
 [package]
-name = "aios-core"
+name = "scarfeeos-core"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "AIOS AI core: model providers, speech and task API"
+description = "ScarfeeOS AI core: model providers, speech and task API"
 
 [dependencies]

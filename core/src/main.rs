@@ -1,9 +1,9 @@
-use aios_core::lang::Language;
+use scarfeeos_core::lang::Language;
 
 fn main() {
-    let lang = std::env::var("AIOS_LANG")
+    let lang = std::env::var("SCARFEEOS_LANG")
         .ok()
         .and_then(|v| Language::from_code(&v))
         .unwrap_or(Language::English);
-    println!("AIOS core starting (language: {})", lang.native_name());
+    println!("ScarfeeOS core starting (language: {})", lang.native_name());
 }
