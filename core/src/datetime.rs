@@ -179,7 +179,7 @@ fn repeat_after(words: &[String], i: usize) -> Option<Repeat> {
 fn day_part_of(word: &str) -> Option<DayPart> {
     match word {
         "morning" | "am" | "صباحا" | "صباح" | "الصباح" | "الصبح" | "الصبحيه" => Some(DayPart::Morning),
-        "noon" | "ظهرا" | "ظهر" | "الظهر" => Some(DayPart::Noon),
+        "noon" | "ظهرا" | "ظهر" | "الظهر" | "ضهرا" | "ضهر" | "الضهر" => Some(DayPart::Noon),
         "afternoon" | "pm" | "عصرا" | "عصر" | "العصر" => Some(DayPart::Afternoon),
         "evening" | "مساء" | "المساء" => Some(DayPart::Evening),
         "night" | "tonight" | "ليلا" | "الليل" | "بالليل" | "الليله" => Some(DayPart::Night),
@@ -375,6 +375,7 @@ mod tests {
     #[test]
     fn dialect_words() {
         assert_eq!(iso("النهاردة الساعة 5 مساء"), "2026-10-30T17:00:00");
+        assert_eq!(iso("بكرة الساعة 2 الضهر"), "2026-10-31T14:00:00");
         assert_eq!(iso("عقب باكر"), "2026-11-01");
         assert_eq!(iso("باجر"), "2026-10-31");
         assert_eq!(iso("يوم احد"), "2026-11-01");
