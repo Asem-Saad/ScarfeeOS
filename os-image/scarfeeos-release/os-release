@@ -1,0 +1,12 @@
+NAME="ScarfeeOS"
+VERSION="0.0.1"
+ID=scarfeeos
+VERSION_ID=0.0.1
+PRETTY_NAME="ScarfeeOS 0.0.1"
+ANSI_COLOR="0;36"
+LOGO=scarfeeos-logo-icon
+CPE_NAME="cpe:/o:scarfeeos:scarfeeos:0.0.1"
+HOME_URL="https://github.com/Asem-Saad/ScarfeeOS"
+DOCUMENTATION_URL="https://github.com/Asem-Saad/ScarfeeOS/tree/main/docs"
+SUPPORT_URL="https://github.com/Asem-Saad/ScarfeeOS/issues"
+BUG_REPORT_URL="https://github.com/Asem-Saad/ScarfeeOS/issues"

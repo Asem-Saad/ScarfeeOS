@@ -1,0 +1,5 @@
+# ScarfeeOS default per-user service policy.
+enable dbus-broker.service
+enable pipewire.socket
+enable pipewire-pulse.socket
+enable wireplumber.service

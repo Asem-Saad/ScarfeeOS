@@ -1,0 +1,11 @@
+# ScarfeeOS default service policy: enable only what the image package list
+# installs and needs; everything else stays off until an admin enables it.
+enable dbus.socket
+enable dbus-broker.service
+enable NetworkManager.service
+enable NetworkManager-wait-online.service
+enable NetworkManager-dispatcher.service
+enable bluetooth.service
+enable polkit.service
+enable power-profiles-daemon.service
+disable *

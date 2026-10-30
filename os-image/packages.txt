@@ -30,8 +30,9 @@ mesa-vulkan-drivers
 pipewire
 pipewire-pulseaudio
 wireplumber
-# Release replacement (no logo package yet)
-generic-release
+# ScarfeeOS release files and logo (built from scarfeeos-release/ and scarfeeos-logos/)
+scarfeeos-release
+scarfeeos-logos
 # Languages
 glibc-langpack-en
 glibc-langpack-ar
@@ -75,8 +76,10 @@ gstreamer1-plugin-libav
 ffmpeg-free
 libavcodec-free
 gstreamer1-plugins-bad-freeworld
-# Fedora-branded packages (docs/ip-and-licensing.md rule 6), and generic-logos
-# (README.md, "Branded packages")
+# Fedora-branded packages (docs/ip-and-licensing.md rule 6), generic-release
+# (replaced by scarfeeos-release) and generic-logos (README.md, "Branded packages")
+generic-release
+generic-release-common
 fedora-release
 fedora-release-common
 fedora-release-identity-basic

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>ScarfeeOS</title>
+  <!-- Original mark: a band wrapped round the neck, with one end hanging down. -->
+  <rect x="32" y="56" width="192" height="56" rx="28" fill="#1b6e7a"/>
+  <rect x="144" y="112" width="48" height="104" fill="#f2a33a"/>
+  <rect x="144" y="148" width="48" height="12" fill="#1b6e7a"/>
+  <rect x="144" y="174" width="48" height="12" fill="#1b6e7a"/>
+  <rect x="148" y="216" width="8" height="20" fill="#f2a33a"/>
+  <rect x="164" y="216" width="8" height="20" fill="#f2a33a"/>
+  <rect x="180" y="216" width="8" height="20" fill="#f2a33a"/>
+</svg>
