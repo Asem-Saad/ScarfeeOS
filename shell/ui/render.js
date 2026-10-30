@@ -156,13 +156,77 @@ function entryLabel(kind, t) {
   }
 }
 
-function lastPart(path) {
-  const parts = String(path).split('/').filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : String(path);
+// Display only: a Windows \\?\ prefix is dropped (and \\?\UNC\ becomes \\). The path itself is never rewritten.
+function displayPath(path) {
+  const p = String(path);
+  if (p.startsWith('\\\\?\\UNC\\')) {
+    return `\\\\${p.slice(8)}`;
+  }
+  return p.startsWith('\\\\?\\') ? p.slice(4) : p;
 }
 
-// File names are never digit-shaped. They go to the panel as plain strings in a `files` block.
-function describeFiles(heading, none, entries, result, nameOf, t, settings) {
+// Windows paths split on both separators. A Linux path splits on "/" only: a backslash there is part of a name.
+function splitPath(path) {
+  const p = displayPath(path);
+  const windows = /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || p !== String(path);
+  const sep = windows && p.includes('\\') && !p.includes('/') ? '\\' : '/';
+  const parts = p.split(windows ? /[\\/]/ : '/').filter(Boolean);
+  const root = p.startsWith('\\\\') ? '\\\\' : windows ? '' : '/';
+  return { parts, sep, root, windows };
+}
+
+// How many leading parts make up a home folder: /home/name, /Users/name, /root, D:\Users\name.
+function homeDepth({ parts, windows }) {
+  const lower = parts.map((part) => part.toLowerCase());
+  if (windows) {
+    return /^[a-z]:$/.test(lower[0] || '') && lower[1] === 'users' && parts.length > 3 ? 3 : 0;
+  }
+  if ((lower[0] === 'home' || lower[0] === 'users') && parts.length > 2) {
+    return 2;
+  }
+  return lower[0] === 'root' && parts.length > 1 ? 1 : 0;
+}
+
+const MAX_FOLDER_PARTS = 3;
+
+function sameParts(a, b, windows) {
+  return a.every((part, i) => (windows ? part.toLowerCase() === b[i].toLowerCase() : part === b[i]));
+}
+
+// The folder of a result, short enough to read: nothing when it is the listed folder, "~" for home, and the
+// last two folders after an ellipsis when it is deeper than a few levels.
+function folderOf(path, basePath) {
+  const split = splitPath(path);
+  const folder = split.parts.slice(0, -1);
+  const { sep, windows } = split;
+  if (split.parts.length < 2) {
+    return null;
+  }
+  const short = (parts, lead) => (parts.length > MAX_FOLDER_PARTS ? `\u2026${sep}${parts.slice(-2).join(sep)}` : lead + parts.join(sep));
+  if (basePath !== undefined) {
+    const base = splitPath(basePath).parts;
+    if (base.length <= folder.length && sameParts(base, folder, windows)) {
+      const rest = folder.slice(base.length);
+      return rest.length === 0 ? null : short(rest, '');
+    }
+  }
+  const depth = homeDepth(split);
+  if (depth > 0 && folder.length >= depth) {
+    const rest = folder.slice(depth);
+    return rest.length === 0 ? '~' : short(rest, `~${sep}`);
+  }
+  return short(folder, split.root);
+}
+
+// The last part of a path, whatever follows its final separator. "/" stays "/".
+function fileName(path) {
+  const { parts } = splitPath(path);
+  return parts.length > 0 ? parts[parts.length - 1] : displayPath(path);
+}
+
+// File names are never digit-shaped. They go to the panel as plain strings in a `files` block, a name and
+// the folder it is in (null when the heading already says it).
+function describeFiles(heading, none, entries, result, basePath, t, settings) {
   const list = Array.isArray(entries) ? entries : [];
   const blocks = [];
   if (list.length === 0) {
@@ -173,7 +237,8 @@ function describeFiles(heading, none, entries, result, nameOf, t, settings) {
       tone: 'files',
       items: list.slice(0, MAX_LISTED).map((entry) => {
         const e = entry && typeof entry === 'object' ? entry : {};
-        return { name: nameOf(e.path === undefined || e.path === null ? '' : String(e.path)), label: entryLabel(e.kind, t) };
+        const path = e.path === undefined || e.path === null ? '' : String(e.path);
+        return { name: fileName(path), folder: folderOf(path, basePath), label: entryLabel(e.kind, t) };
       }),
     });
     if (list.length > MAX_LISTED) {
@@ -242,14 +307,14 @@ function describeResult(r, t, settings) {
     switch (result.type) {
       case 'listing':
         return describeFiles(
-          fill(t('assistant-result-listing'), { path: result.path }),
-          fill(t('assistant-result-listing-empty'), { path: result.path }),
-          result.entries, result, lastPart, t, settings);
+          fill(t('assistant-result-listing'), { path: displayPath(result.path) }),
+          fill(t('assistant-result-listing-empty'), { path: displayPath(result.path) }),
+          result.entries, result, result.path === undefined || result.path === null ? undefined : String(result.path), t, settings);
       case 'search':
         return describeFiles(
           fill(t('assistant-result-search'), { query: args.query }),
           fill(t('assistant-result-search-none'), { query: args.query }),
-          result.matches, result, String, t, settings);
+          result.matches, result, undefined, t, settings);
       case 'opened': {
         const app = result.app && typeof result.app === 'object' ? result.app : {};
         return [{ tone: 'info', text: fill(t('assistant-result-opened'), { name: app.name }) }];
@@ -332,6 +397,8 @@ function describeResponse(response, t, lang, settings) {
       return [block('info', t('assistant-cancelled'))];
     case 'missing_time':
       return [block('question', t('assistant-missing-time'))];
+    case 'time_only':
+      return [block('question', fill(t('assistant-time-only'), { time: r.time }))];
     case 'error':
       return [block('error', fill(t('assistant-error'), { message: r.message }))];
     case 'unreachable':

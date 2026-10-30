@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { createBridge } from '../dev-bridge.mjs';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import { createBridge, parseArgs } from '../dev-bridge.mjs';
 
 // A stand-in for `scarfeeos-core serve`. The text of a request picks what it does.
 const FAKE_CORE = `#!/usr/bin/env node
@@ -93,10 +95,36 @@ test('confirm, confirm with a time, and cancel reach the core with only their ow
     assert.deepStrictEqual(await sent({ confirm: 'abc123' }), { confirm: 'abc123' });
     assert.deepStrictEqual(await sent({ confirm: 'abc123', time: '2026-10-30T15:30' }), { confirm: 'abc123', time: '2026-10-30T15:30' });
     assert.deepStrictEqual(await sent({ cancel: 'abc123' }), { cancel: 'abc123' });
-    const forged = await post({ cancel: 'abc123', id: 99, upcoming: true, delete_event: 'u' });
+    const forged = await post({ cancel: 'abc123', id: 99, other: true });
     assert.notStrictEqual(forged.body.request.id, 99);
     assert.deepStrictEqual(Object.keys(forged.body.request).sort(), ['cancel', 'id']);
     assert.strictEqual((await chat(base, 'a text turn still works')).body.kind, 'reply');
+  });
+});
+
+test('upcoming, delete_event and hardware reach the core with only their own fields', async () => {
+  await withBridge({}, async (base) => {
+    const sent = async (body) => {
+      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      assert.strictEqual(res.status, 200, JSON.stringify(body));
+      const { id, ...fields } = (await res.json()).request;
+      assert.strictEqual(typeof id, 'number');
+      return fields;
+    };
+    assert.deepStrictEqual(await sent({ upcoming: true }), { upcoming: true });
+    assert.deepStrictEqual(await sent({ upcoming: true, from: '2026-10-30' }), { upcoming: true, from: '2026-10-30' });
+    assert.deepStrictEqual(await sent({ delete_event: 'uid-1@scarfeeos' }), { delete_event: 'uid-1@scarfeeos' });
+    assert.deepStrictEqual(await sent({ hardware: true }), { hardware: true });
+    assert.deepStrictEqual(await sent({ hardware: true, id: 5 }), { hardware: true });
+    for (const body of [
+      { upcoming: false }, { upcoming: 1 }, { upcoming: true, from: 20261030 }, { from: '2026-10-30' }, { delete_event: '' }, { delete_event: 7 },
+      { delete_event: 'u', from: '2026-10-30' }, { hardware: 'yes' }, { hardware: false }, { hardware: true, from: '2026-10-30' },
+      { upcoming: true, hardware: true }, { upcoming: true, cancel: 'a' }, { delete_event: 'u', confirm: 'a' }, { hardware: true, text: 'hi', language: 'en' },
+      { upcoming: true, language: 'en' }, { hardware: true, time: '10:00' },
+    ]) {
+      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      assert.strictEqual(res.status, 400, JSON.stringify(body));
+    }
   });
 });
 
@@ -277,4 +305,56 @@ test('a symlink that leaves the served directory is refused', async () => {
     assert.strictEqual((await fetch(`${base}/link.txt`)).status, 403);
     assert.strictEqual((await fetch(`${base}/dir-link/outside.txt`)).status, 403);
   });
+});
+
+test('shell/installer/ is served at /installer/, and a missing folder is a 404', async () => {
+  const installer = path.join(tmp, 'installer');
+  fs.mkdirSync(installer, { recursive: true });
+  fs.writeFileSync(path.join(installer, 'index.html'), '<!doctype html><title>installer</title>');
+  fs.writeFileSync(path.join(installer, 'installer.js'), 'void 0;');
+  fs.writeFileSync(path.join(tmp, 'secret.txt'), 'secret');
+  await withBridge({ installerDir: installer }, async (base, port) => {
+    const page = await fetch(`${base}/installer/`);
+    assert.strictEqual(page.status, 200);
+    assert.match(page.headers.get('content-type'), /^text\/html/);
+    assert.match(await page.text(), /<title>installer<\/title>/);
+    assert.strictEqual((await fetch(`${base}/installer/installer.js`)).status, 200);
+    assert.strictEqual((await fetch(`${base}/installer/nothing.js`)).status, 404);
+    assert.strictEqual((await raw(port, 'GET /installer/../secret.txt HTTP/1.1')).status, 403);
+    assert.strictEqual((await raw(port, 'GET /installer/%2e%2e/secret.txt HTTP/1.1')).status, 403);
+    assert.strictEqual((await fetch(`${base}/installerx`)).status, 404);
+  });
+  await withBridge({ installerDir: path.join(tmp, 'no-such-folder') }, async (base) => {
+    assert.strictEqual((await fetch(`${base}/installer/`)).status, 404);
+    assert.strictEqual((await fetch(`${base}/`)).status, 200);
+  });
+});
+
+test('--port is read, checked, and used by the program', async () => {
+  assert.deepStrictEqual(parseArgs(['--core', 'c'], {}), { corePath: 'c', port: 8770 });
+  assert.deepStrictEqual(parseArgs(['--core', 'c', '--port', '8771'], {}), { corePath: 'c', port: 8771 });
+  assert.deepStrictEqual(parseArgs(['--port=9000', '--core=c'], {}), { corePath: 'c', port: 9000 });
+  assert.deepStrictEqual(parseArgs(['--port', '0'], { SCARFEEOS_CORE: 'env-core' }), { corePath: 'env-core', port: 0 });
+  for (const bad of [['--port'], ['--port', 'abc'], ['--port=65536'], ['--port', '-1'], ['--port='], ['--prot', '1']]) {
+    assert.strictEqual(parseArgs(['--core', 'c', ...bad], {}), null, bad.join(' '));
+  }
+  assert.strictEqual(parseArgs(['--port', '8771'], {}), null, 'no core');
+
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const { port } = probe.address();
+  await new Promise((resolve) => probe.close(resolve));
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../dev-bridge.mjs', import.meta.url)), '--core', fakeCore, '--port', String(port)], { stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    const line = await new Promise((resolve, reject) => {
+      child.stdout.once('data', (chunk) => resolve(String(chunk)));
+      child.once('error', reject);
+      child.once('exit', (code) => reject(new Error(`bridge exited with ${code}`)));
+    });
+    assert.ok(line.includes(`http://127.0.0.1:${port}/`), line);
+    assert.strictEqual((await fetch(`http://127.0.0.1:${port}/`)).status, 200);
+  } finally {
+    child.removeAllListeners('exit');
+    child.kill('SIGTERM');
+  }
 });

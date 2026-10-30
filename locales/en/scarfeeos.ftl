@@ -40,6 +40,7 @@ assistant-hijri = { $gregorian } is about { $day } { $month } { $year } AH.
 assistant-hijri-approximate = This date is approximate. It is calculated and can differ from the official Hijri date by a day or two.
 assistant-missing-date = Which date do you mean? Please write the Gregorian date in digits, for example 2026-10-30.
 assistant-missing-time = I need a date and a time for this. When should it happen?
+assistant-time-only = You wrote only a time: { $time }. What would you like me to do at that time? For example, set a reminder or schedule a meeting.
 assistant-run-intro = I understood your request as: { $action }.
 assistant-clarify-question = The time could mean two things. Is this what you meant: { $action }?
 assistant-confirm-question = This changes a setting. Do you want to go ahead: { $action }?

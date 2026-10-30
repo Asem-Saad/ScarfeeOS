@@ -40,6 +40,7 @@ assistant-hijri = يوافق { $gregorian } نحو { $day } { $month } { $year }
 assistant-hijri-approximate = هذا التاريخ تقريبي، فهو محسوب وقد يختلف عن التاريخ الهجري الرسمي بيوم أو يومين.
 assistant-missing-date = أي تاريخ تقصد؟ اكتب التاريخ الميلادي بالأرقام، مثل 2026-10-30.
 assistant-missing-time = أحتاج إلى تاريخ ووقت لهذا الطلب. متى تريد تنفيذه؟
+assistant-time-only = ذكرت الوقت فقط: { $time }. ماذا تريد أن أفعل في هذا الوقت؟ مثلًا: ضبط تذكير أو جدولة اجتماع.
 assistant-run-intro = فهمتُ طلبك على أنه: { $action }.
 assistant-clarify-question = قد يحتمل الوقت معنيين. هل هذا ما قصدته: { $action }؟
 assistant-confirm-question = هذا الإجراء يغيّر أحد الإعدادات. هل تريد المتابعة: { $action }؟

@@ -60,6 +60,20 @@ body {
   font-weight: 600;
 }
 
+.sidebar-link {
+  padding-block: 0.5rem;
+  padding-inline: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sidebar-link:hover,
+.sidebar-link:focus-visible {
+  background: var(--surface);
+}
+
 .conversation-list {
   display: flex;
   flex-direction: column;
@@ -218,6 +232,7 @@ body {
   overflow-wrap: anywhere;
 }
 
+.message-file-folder,
 .message-file-kind {
   margin-inline-start: 0.5rem;
   font-size: 0.8rem;

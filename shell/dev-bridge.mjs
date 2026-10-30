@@ -1,9 +1,11 @@
 // Development bridge, until Tauri is added. Serves shell/ui/ and locales/ on loopback and talks to
 // one `scarfeeos-core serve` child over JSON lines (see core/src/ipc.rs).
 //
-//   node shell/dev-bridge.mjs --core path/to/scarfeeos-core      (or set SCARFEEOS_CORE)
+//   node shell/dev-bridge.mjs --core path/to/scarfeeos-core [--port 8770]     (or set SCARFEEOS_CORE)
 //
-// Then open http://127.0.0.1:8770/. Standard library only. Not for production use.
+// Then open http://127.0.0.1:8770/ (the panel), /calendar.html or /installer/ (shell/installer/). The bridge
+// forwards text, confirm, cancel, upcoming, delete_event and hardware requests to the core. Standard library
+// only. Not for production use.
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -145,7 +147,15 @@ async function resolveInside(root, urlPath) {
   if (segments.some((s) => s === '..' || s.includes('\0') || s.includes('\\'))) {
     throw new BridgeError('forbidden', 403);
   }
-  const rootReal = await fs.realpath(root);
+  let rootReal;
+  try {
+    rootReal = await fs.realpath(root);
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
+      return null;
+    }
+    throw error;
+  }
   const target = path.join(rootReal, ...segments);
   let real;
   try {
@@ -165,29 +175,48 @@ async function resolveInside(root, urlPath) {
   return real;
 }
 
-// What /chat takes: a turn, or the answer to a held action. Only these fields reach the core, never an `id`.
+// What /chat takes: a turn, the answer to a held action, or one of the calendar and hardware requests. Only these
+// fields reach the core, never an `id`.
+const CHAT_KINDS = ['text', 'confirm', 'cancel', 'upcoming', 'delete_event', 'hardware'];
+const CHAT_EXTRAS = { text: ['language'], confirm: ['time'], upcoming: ['from'] };
+
 function chatFields(body) {
   const given = (key) => body && typeof body === 'object' && Object.hasOwn(body, key);
-  const kinds = ['text', 'confirm', 'cancel'].filter(given);
+  const kinds = CHAT_KINDS.filter(given);
   const bad = () =>
     new BridgeError(
-      'expected {"text": string, "language": "en" | "ar"}, {"confirm": action id, "time"?: string} or {"cancel": action id}',
+      'expected {"text": string, "language": "en" | "ar"}, {"confirm": action id, "time"?: string}, {"cancel": action id}, ' +
+        '{"upcoming": true, "from"?: string}, {"delete_event": uid} or {"hardware": true}',
       400
     );
-  if (kinds.length !== 1 || (given('language') && kinds[0] !== 'text') || (given('time') && kinds[0] !== 'confirm')) {
+  if (kinds.length !== 1) {
     throw bad();
   }
-  if (kinds[0] === 'text') {
-    if (typeof body.text !== 'string' || typeof body.language !== 'string' || !LANGUAGES.has(body.language)) {
-      throw bad();
-    }
-    return { text: body.text, language: body.language };
-  }
-  if (typeof body[kinds[0]] !== 'string' || !body[kinds[0]]) {
+  const [kind] = kinds;
+  const allowed = CHAT_EXTRAS[kind] || [];
+  if (['language', 'time', 'from'].some((key) => given(key) && !allowed.includes(key))) {
     throw bad();
   }
-  if (kinds[0] === 'cancel') {
-    return { cancel: body.cancel };
+  switch (kind) {
+    case 'text':
+      if (typeof body.text !== 'string' || typeof body.language !== 'string' || !LANGUAGES.has(body.language)) {
+        throw bad();
+      }
+      return { text: body.text, language: body.language };
+    case 'upcoming':
+    case 'hardware':
+      if (body[kind] !== true || (given('from') && typeof body.from !== 'string')) {
+        throw bad();
+      }
+      return given('from') ? { upcoming: true, from: body.from } : { [kind]: true };
+    default:
+      break;
+  }
+  if (typeof body[kind] !== 'string' || !body[kind]) {
+    throw bad();
+  }
+  if (kind !== 'confirm') {
+    return { [kind]: body[kind] };
   }
   if (!given('time')) {
     return { confirm: body.confirm };
@@ -239,6 +268,7 @@ export function createBridge({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   uiDir = path.join(shellDir, 'ui'),
   localesDir = path.join(shellDir, '..', 'locales'),
+  installerDir = path.join(shellDir, 'installer'),
 }) {
   const core = createCore({ corePath, timeoutMs });
   let allowedHosts = new Set();
@@ -260,8 +290,13 @@ export function createBridge({
   }
 
   async function serveStatic(req, res, pathname) {
-    const isLocales = pathname === '/locales' || pathname.startsWith('/locales/');
-    const file = await resolveInside(isLocales ? localesDir : uiDir, isLocales ? pathname.slice('/locales'.length) : pathname);
+    const under = (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`);
+    const [root, rest] = under('/locales')
+      ? [localesDir, pathname.slice('/locales'.length)]
+      : under('/installer')
+        ? [installerDir, pathname.slice('/installer'.length)]
+        : [uiDir, pathname];
+    const file = await resolveInside(root, rest);
     if (!file) {
       throw new BridgeError('not found', 404);
     }
@@ -341,24 +376,33 @@ export function createBridge({
   };
 }
 
-function parseArgs(argv) {
-  let core = process.env.SCARFEEOS_CORE;
+export function parseArgs(argv, env = process.env) {
+  let core = env.SCARFEEOS_CORE;
+  let port = DEFAULT_PORT;
+  const parsePort = (value) => (/^\d{1,5}$/.test(value) && Number(value) <= 65535 ? Number(value) : null);
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--core' && i + 1 < argv.length) {
       core = argv[(i += 1)];
     } else if (argv[i].startsWith('--core=')) {
       core = argv[i].slice('--core='.length);
+    } else if (argv[i] === '--port' && i + 1 < argv.length) {
+      port = parsePort(argv[(i += 1)]);
+    } else if (argv[i].startsWith('--port=')) {
+      port = parsePort(argv[i].slice('--port='.length));
     } else {
       return null;
     }
+    if (port === null) {
+      return null;
+    }
   }
-  return core ? { corePath: core } : null;
+  return core ? { corePath: core, port } : null;
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options) {
-    console.error('usage: node shell/dev-bridge.mjs --core <path to scarfeeos-core>   (or set SCARFEEOS_CORE)');
+    console.error('usage: node shell/dev-bridge.mjs --core <path to scarfeeos-core> [--port <0-65535>]   (or set SCARFEEOS_CORE)');
     process.exit(2);
   }
   const bridge = createBridge(options);
@@ -369,7 +413,7 @@ async function main() {
     const port = await bridge.start();
     console.log(`ScarfeeOS dev bridge: http://${HOST}:${port}/  (core: ${options.corePath})`);
   } catch (error) {
-    console.error(`cannot listen on ${HOST}:${DEFAULT_PORT}: ${error.message}`);
+    console.error(`cannot listen on ${HOST}:${options.port}: ${error.message}`);
     process.exit(1);
   }
 }

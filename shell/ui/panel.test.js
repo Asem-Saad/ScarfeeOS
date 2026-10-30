@@ -304,7 +304,7 @@ test('a listing shows names in bidi text, 20 at most, and the digits setting lea
   assert.deepStrictEqual(files().map((n) => n.textContent), names.slice(0, 20));
 });
 
-test('a search shows full paths and the notes about what is missing', async () => {
+test('a search shows names with their folders and the notes about what is missing', async () => {
   const search = run('search_files', { query: 'report' }, {
     ok: true, type: 'search', truncated: true, unreadable: 3,
     matches: [{ path: '/home/u/Downloads/report.pdf', kind: 'file' }, { path: '/home/u/Documents/تقارير', kind: 'dir' }],
@@ -313,7 +313,10 @@ test('a search shows full paths and the notes about what is missing', async () =
   await ask(ids);
   const text = shown(ids);
   assert.match(text, /Files matching “report”:/);
-  assert.ok(text.includes('/home/u/Downloads/report.pdf') && text.includes('/home/u/Documents/تقارير'));
+  assert.ok(text.includes('report.pdf') && text.includes('~/Downloads') && text.includes('تقارير') && text.includes('~/Documents'));
+  assert.ok(!text.includes('/home/u/'));
+  const folders = ids['message-list'].all((n) => n.className === 'message-file-folder');
+  assert.deepStrictEqual(folders.map((n) => [n.tagName, n.dir]), [['bdi', 'ltr'], ['bdi', 'ltr']]);
   assert.match(text, /folder/);
   assert.match(text, /There may be more than this/);
   assert.match(text, /Folders that could not be read: 3\./);
@@ -445,4 +448,9 @@ test('buttons are off while a message is being answered, and a held call without
   const none = await loadPanel(sequence({ kind: 'needs_confirmation', tool: 'set_language', arguments: { lang: 'ar' } }));
   await ask(none.ids);
   assert.strictEqual(buttons(none.ids).length, 0);
+});
+
+test('index.html links to the meetings and reminders screen with the calendar-title text', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  assert.match(html, /<a [^>]*href="calendar\.html"[^>]*data-i18n="calendar-title"/);
 });

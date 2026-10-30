@@ -46,6 +46,7 @@ const EVERY_KIND = [
   { kind: 'declined' },
   { kind: 'hijri_approx', gregorian: '2026-10-30', year: 1448, month: 5, day: 18, month_name_en: 'Jumada al-Awwal', month_name_ar: 'جمادى الأولى', approximate: true },
   { kind: 'missing_date' },
+  { kind: 'time_only', time: '11' },
   { kind: 'run', tool: 'open_app', arguments: { name: 'calculator' } },
   run('open_app', { name: 'calculator' }, { ok: true, type: 'opened', app: { id: 'calc.desktop', name: 'Calculator' } }),
   run('create_reminder', REMINDER, { ok: true, type: 'event', event: EVENT }),
@@ -200,7 +201,7 @@ test('a listing shows names as plain text blocks, with kinds, and says when it i
   const blocks = render(run('list_files', { path: '/home/user/Documents' }, LISTING));
   assert.deepStrictEqual(blocks, [
     { tone: 'info', text: 'The contents of /home/user/Documents:' },
-    { tone: 'files', items: [{ name: 'Reports', label: 'folder' }, { name: 'تقرير 2026.txt', label: null }] },
+    { tone: 'files', items: [{ name: 'Reports', folder: null, label: 'folder' }, { name: 'تقرير 2026.txt', folder: null, label: null }] },
   ]);
   const ar = render(run('list_files', { path: '/home/user/Documents' }, LISTING), 'ar');
   assert.strictEqual(ar[0].text, 'محتويات /home/user/Documents:');
@@ -209,14 +210,14 @@ test('a listing shows names as plain text blocks, with kinds, and says when it i
   const kinds = render(run('list_files', { path: '/d' }, { ok: true, type: 'listing', path: '/d', truncated: false, entries: [
     { path: '/d/l', kind: 'symlink' }, { path: '/d/o', kind: 'other' }, { path: '/d/', kind: 'file' }, { path: '/', kind: 'file' }] }));
   assert.deepStrictEqual(kinds[1].items, [
-    { name: 'l', label: 'link' }, { name: 'o', label: 'other' }, { name: 'd', label: null }, { name: '/', label: null }]);
+    { name: 'l', folder: null, label: 'link' }, { name: 'o', folder: null, label: 'other' }, { name: 'd', folder: null, label: null }, { name: '/', folder: null, label: null }]);
 });
 
-test('a search shows full paths, and says when nothing matched, results were cut short or folders were unreadable', () => {
+test('a search shows names with their folders, and says when nothing matched, results were cut short or folders were unreadable', () => {
   const blocks = render(run('search_files', { query: 'report' }, SEARCH));
   assert.deepStrictEqual(blocks.map((b) => b.tone), ['info', 'files', 'note', 'note']);
   assert.strictEqual(blocks[0].text, 'Files matching “report”:');
-  assert.deepStrictEqual(blocks[1].items.map((i) => i.name), ['/home/user/Documents/report-2026.pdf', '/home/user/Downloads/تقرير']);
+  assert.deepStrictEqual(blocks[1].items.map((i) => [i.name, i.folder]), [['report-2026.pdf', '~/Documents'], ['تقرير', '~/Downloads']]);
   assert.match(blocks[2].text, /may be more/);
   assert.strictEqual(blocks[3].text, 'Folders that could not be read: 2.');
   assert.match(texts(run('search_files', { query: 'report' }, SEARCH), 'ar')[1], /قد توجد نتائج أكثر/);
@@ -227,7 +228,7 @@ test('at most 20 files are shown, and the rest are counted', () => {
   const matches = Array.from({ length: 125 }, (_, i) => ({ path: `/d/file ${i}`, kind: 'file' }));
   const blocks = render(run('search_files', { query: 'file' }, { ok: true, type: 'search', matches, truncated: true, unreadable: 0 }));
   assert.strictEqual(blocks[1].items.length, 20);
-  assert.strictEqual(blocks[1].items[19].name, '/d/file 19');
+  assert.deepStrictEqual([blocks[1].items[19].name, blocks[1].items[19].folder], ['file 19', '/d']);
   assert.strictEqual(blocks[2].text, '105 more not shown.');
   assert.strictEqual(texts(run('search_files', { query: 'file' }, { ok: true, type: 'search', matches: matches.slice(0, 21) }), 'en', { digits: 'eastern' })[1], '١ more not shown.');
   assert.strictEqual(render(run('search_files', { query: 'file' }, { ok: true, type: 'search', matches: matches.slice(0, 20) }))[1].items.length, 20);
@@ -239,12 +240,56 @@ test('the digits setting never changes a file name, a path or a query', () => {
   for (const digits of ['western', 'eastern']) {
     const settings = { digits, calendar: 'gregorian' };
     const blocks = render(run('search_files', { query: 'q 2026 ٢٠٢٦' }, { ok: true, type: 'search', matches: entries, truncated: false, unreadable: 0 }), 'en', settings);
-    assert.deepStrictEqual(blocks[1].items.map((i) => i.name), entries.map((e) => e.path));
+    assert.deepStrictEqual(blocks[1].items.map((i) => i.name), ['report 2026-10.txt', '٢٠٢٦ ملف 2026']);
     assert.strictEqual(blocks[0].text, 'Files matching “q 2026 ٢٠٢٦”:');
     const listing = render(run('list_files', { path: '/home/u/2026' }, { ok: true, type: 'listing', path: '/home/u/2026', truncated: false, entries }), 'en', settings);
     assert.strictEqual(listing[0].text, 'The contents of /home/u/2026:');
     assert.deepStrictEqual(listing[1].items.map((i) => i.name), ['report 2026-10.txt', '٢٠٢٦ ملف 2026']);
   }
+});
+
+const found = (matches, listing) => render(listing
+  ? run('list_files', { path: listing }, { ok: true, type: 'listing', path: listing, entries: matches.map((path) => ({ path, kind: 'file' })), truncated: false })
+  : run('search_files', { query: 'x' }, { ok: true, type: 'search', matches: matches.map((path) => ({ path, kind: 'file' })), truncated: false, unreadable: 0 }))[1].items;
+
+test('a Windows \\\\?\\ prefix is left out of what is shown, and nothing else about the path changes', () => {
+  const [a, b, c] = found([
+    '\\\\?\\D:\\Users\\sam\\Documents\\report.txt',
+    '\\\\?\\D:\\Data\\report.txt',
+    '\\\\?\\UNC\\server\\share\\x\\y.txt',
+  ]);
+  assert.deepStrictEqual([a.name, a.folder], ['report.txt', '~\\Documents']);
+  assert.deepStrictEqual([b.name, b.folder], ['report.txt', 'D:\\Data']);
+  assert.deepStrictEqual([c.name, c.folder], ['y.txt', '\\\\server\\share\\x']);
+  const listing = render(run('list_files', { path: '\\\\?\\D:\\Users\\sam\\Documents' }, {
+    ok: true, type: 'listing', path: '\\\\?\\D:\\Users\\sam\\Documents', truncated: false,
+    entries: [{ path: '\\\\?\\D:\\Users\\sam\\Documents\\report.txt', kind: 'file' }, { path: '\\\\?\\D:\\Users\\sam\\Documents\\Old\\a.txt', kind: 'file' }],
+  }));
+  assert.strictEqual(listing[0].text, 'The contents of D:\\Users\\sam\\Documents:');
+  assert.deepStrictEqual(listing[1].items.map((i) => [i.name, i.folder]), [['report.txt', null], ['a.txt', 'Old']]);
+});
+
+test('a folder is shown relative to the listing, to home when short, and cut to its last two levels when deep', () => {
+  assert.deepStrictEqual(found(['/home/sam/a.txt', '/home/sam/Documents/Work/b.txt', '/home/sam/a/b/c/d/e.txt', '/etc/hosts', '/srv/a/b/c/d/f.txt', '/root/x/y.txt'])
+    .map((i) => [i.name, i.folder]), [
+    ['a.txt', '~'], ['b.txt', '~/Documents/Work'], ['e.txt', '\u2026/c/d'], ['hosts', '/etc'], ['f.txt', '\u2026/c/d'], ['y.txt', '~/x']]);
+  assert.deepStrictEqual(found(['/data/in/a.txt', '/data/in/sub/b.txt', '/other/c.txt'], '/data/in/').map((i) => [i.name, i.folder]),
+    [['a.txt', null], ['b.txt', 'sub'], ['c.txt', '/other']]);
+  assert.strictEqual(found(['C:\\Users\\sam\\x.txt'])[0].folder, '~');
+});
+
+test('a backslash in a Linux path is part of a name and is never treated as a separator or removed', () => {
+  const [a, b] = found(['/tmp/a\\b.txt', '/home/sam/\\\\?\\odd/c.txt']);
+  assert.deepStrictEqual([a.name, a.folder], ['a\\b.txt', '/tmp']);
+  assert.deepStrictEqual([b.name, b.folder], ['c.txt', '~/\\\\?\\odd']);
+});
+
+test('a bare time is answered with a question that names the time, in both languages', () => {
+  const response = { id: 4, kind: 'time_only', time: '3:30pm' };
+  assert.deepStrictEqual(render(response), [{ tone: 'question', text: 'You wrote only a time: 3:30pm. What would you like me to do at that time? For example, set a reminder or schedule a meeting.' }]);
+  const [ar] = render(response, 'ar');
+  assert.strictEqual(ar.tone, 'question');
+  assert.ok(ar.text.includes('3:30pm') && /ماذا تريد/.test(ar.text) && !/cannot show|لا تستطيع هذه الواجهة/.test(ar.text));
 });
 
 test('errors are told by error.code through locale text, in both languages, and the closest apps are named', () => {

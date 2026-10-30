@@ -136,6 +136,11 @@
         const name = el('bdi', null, file.name);
         name.dir = 'auto';
         item.append(name);
+        if (file.folder) {
+          const folder = el('bdi', 'message-file-folder', file.folder);
+          folder.dir = 'ltr';
+          item.append(folder);
+        }
         if (file.label) {
           item.append(el('span', 'message-file-kind', file.label));
         }
