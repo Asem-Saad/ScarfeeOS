@@ -6,3 +6,5 @@ license = "Apache-2.0"
 description = "ScarfeeOS AI core: model providers, speech and task API"
 
 [dependencies]
+serde_json = "1.0.154"
+ureq = { version = "3", default-features = false }
