@@ -51,7 +51,8 @@ def main(argv=None):
     here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description='Run prompts.jsonl through scarfeeos-core chat.')
     parser.add_argument('--exe', required=True, help='path to the scarfeeos-core executable')
-    parser.add_argument('--prompts', default=str(here / 'prompts.jsonl'))
+    parser.add_argument('--prompts', default=str(here / 'prompts.jsonl'),
+                        help='prompts file; use prompts-dialects.jsonl for the Egyptian and Gulf set')
     parser.add_argument('--out', default=str(here / 'results' / 'pipeline.jsonl'))
     parser.add_argument('--timeout', type=int, default=300, help='seconds allowed per prompt')
     args = parser.parse_args(argv)

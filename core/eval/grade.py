@@ -463,7 +463,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Grade a run_eval.ps1 or run_pipeline.py results file.')
     parser.add_argument('results', help='results/<label>.jsonl written by run_eval.ps1 or run_pipeline.py')
     parser.add_argument('--pipeline', action='store_true', help='the results are in the run_pipeline.py format')
-    parser.add_argument('--prompts', default=str(here / 'prompts.jsonl'))
+    parser.add_argument('--prompts', default=str(here / 'prompts.jsonl'),
+                        help='prompts file; use prompts-dialects.jsonl for the Egyptian and Gulf set')
     parser.add_argument('--today', required=True, help='run date, YYYY-MM-DD')
     args = parser.parse_args(argv)
     try:

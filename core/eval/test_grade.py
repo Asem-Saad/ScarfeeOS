@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -554,6 +555,113 @@ class MainTests(unittest.TestCase):
     def test_bad_today_is_rejected(self):
         with self.assertRaises(SystemExit):
             grade.main(['x.jsonl', '--today', '30/10/2026'])
+
+
+DIALECTS = Path(__file__).resolve().parent / 'prompts-dialects.jsonl'
+REAL_TOOLS = {'open_app', 'list_files', 'search_files', 'create_reminder', 'schedule_meeting', 'set_language'}
+RELIGIOUS_WORDS = {'الله', 'لله', 'بالله', 'شاء', 'ماشاء', 'صلاة', 'الصلاة', 'صلوات', 'قرآن', 'القرآن', 'دعاء',
+                   'رمضان', 'مسجد', 'جامع', 'حج', 'عمرة', 'صيام', 'دين', 'الدين', 'ديني', 'god', 'pray', 'prayer',
+                   'quran', 'ramadan', 'mosque', 'religion', 'islamic'}
+
+
+def rust_outcome(prompt, today=TODAY):
+    """What `scarfeeos-core chat` would print for a perfect answer to the prompt."""
+    tool = prompt.get('tool')
+    if not tool:
+        return 'reply: a short answer'
+    args = dict(tool['args'])
+    if 'time' in args:
+        when, (start, _) = grade.resolve_description(args['time'], today)
+        args['time'] = f'{when.isoformat()}T{start // 60:02d}:{start % 60:02d}:00'
+
+    def quote(value):
+        if isinstance(value, list):
+            return '[' + ', '.join(quote(v) for v in value) + ']'
+        return {'en': 'English', 'ar': 'Arabic'}[value] if tool['name'] == 'set_language' else json.dumps(value, ensure_ascii=False)
+
+    name = ''.join(part.title() for part in tool['name'].split('_'))
+    fields = ', '.join(f'{k}: {quote(v)}' for k, v in args.items())
+    if tool['name'] in ('create_reminder', 'schedule_meeting'):
+        fields += ', repeat: None'
+    return f'run: {name} {{ {fields} }}'
+
+
+class DialectPromptsTests(unittest.TestCase):
+    def rows(self):
+        return grade.read_jsonl(DIALECTS)
+
+    def test_thirty_prompts_fifteen_per_dialect(self):
+        rows = self.rows()
+        self.assertEqual(len(rows), 30)
+        self.assertEqual([r['dialect'] for r in rows].count('egyptian'), 15)
+        self.assertEqual([r['dialect'] for r in rows].count('gulf'), 15)
+        ids = [r['id'] for r in rows]
+        self.assertEqual(len(set(ids)), 30)
+        self.assertFalse(set(ids) & {r['id'] for r in grade.read_jsonl(PROMPTS)})
+
+    def test_fields_and_tools_are_valid(self):
+        for row in self.rows():
+            self.assertTrue({'id', 'category', 'lang', 'dialect', 'prompt', 'expect'} <= set(row), row['id'])
+            self.assertEqual(row['category'], 'dialect', row['id'])
+            self.assertIn(row['lang'], ('ar', 'mixed'), row['id'])
+            self.assertTrue(row['prompt'].strip() and row['expect'].strip(), row['id'])
+            tool = row.get('tool')
+            if tool:
+                self.assertIn(tool['name'], REAL_TOOLS, row['id'])
+                if 'time' in tool['args']:
+                    self.assertIsNotNone(grade.resolve_description(tool['args']['time'], TODAY), row['id'])
+        self.assertEqual(sum(1 for r in self.rows() if r.get('tool')), 26)
+
+    def test_names_and_politeness_are_present(self):
+        text = ' '.join(r['prompt'] for r in self.rows())
+        for name in ('إسلام', 'محمد صلاح'):
+            self.assertEqual(sum(1 for r in self.rows() if name in r['prompt']), 2, name)
+        attendees = [a for r in self.rows() if r.get('tool', {}).get('name') == 'schedule_meeting'
+                     for a in r['tool']['args']['attendees']]
+        self.assertEqual(sorted(attendees), ['إسلام', 'إسلام', 'محمد صلاح', 'محمد صلاح'])
+        self.assertIn('لو سمحت', text)
+        self.assertTrue(any(r['lang'] == 'mixed' for r in self.rows()))
+
+    def test_no_religious_content(self):
+        for row in self.rows():
+            words = {w.casefold() for w in re.findall(r'\w+', row['prompt'] + ' ' + row['expect'])}
+            self.assertFalse(words & RELIGIOUS_WORDS, row['id'])
+
+    def test_a_perfect_run_passes_every_check(self):
+        rows = self.rows()
+        results = grade.pipeline_results([{'id': r['id'], 'outcome': rust_outcome(r), 'seconds': 1} for r in rows])
+        grades = grade.grade_all(rows, results, TODAY)
+        self.assertEqual([g['issues'] for g in grades], [[]] * 30)
+        for g in grades:
+            if g['tool'] is not None:
+                self.assertEqual((g['tool'], g['exact']), ('pass', 'pass'), g['id'])
+        self.assertEqual(sum(1 for g in grades if g['time'] == 'pass'), 12)
+
+    def test_a_translated_or_changed_name_fails(self):
+        rows = [r for r in self.rows() if r['id'] in ('dialect-eg-011', 'dialect-gulf-012')]
+        outcomes = {'dialect-eg-011': rust_outcome(rows[0]).replace('إسلام', 'Islam'),
+                    'dialect-gulf-012': rust_outcome(rows[1]).replace('محمد صلاح', 'محمد')}
+        results = grade.pipeline_results([{'id': i, 'outcome': o, 'seconds': 1} for i, o in outcomes.items()])
+        grades = grade.grade_all(rows, results, TODAY)
+        self.assertEqual([g['args'] for g in grades], ['fail', 'fail'])
+
+    @unittest.skipIf(os.name == 'nt', 'the fake executable is a script with a shebang line')
+    def test_run_pipeline_then_grade_with_the_prompts_option(self):
+        rows = self.rows()
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = write_fake_exe(tmp, {r['prompt']: rust_outcome(r) for r in rows})
+            out = os.path.join(tmp, 'dialects.jsonl')
+            with redirect_stdout(StringIO()) as printed:
+                self.assertEqual(run_pipeline.main(['--exe', fake, '--prompts', str(DIALECTS), '--out', out]), 0)
+            self.assertIn('Done: 30 prompts', printed.getvalue())
+            self.assertEqual([r['id'] for r in grade.read_jsonl(out)], [r['id'] for r in rows])
+            report = StringIO()
+            with redirect_stdout(report):
+                code = grade.main([out, '--pipeline', '--prompts', str(DIALECTS), '--today', '2026-10-30'])
+        self.assertEqual(code, 0)
+        line = next(l for l in report.getvalue().splitlines() if l.startswith('dialect'))
+        self.assertEqual(line.split(), ['dialect', '30', '26/26', '0', '18/18', '26/26', '12/12', '12/12', '0', '0'])
+        self.assertIn('Failures (0):', report.getvalue())
 
 
 if __name__ == '__main__':
