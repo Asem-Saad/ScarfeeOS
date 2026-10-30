@@ -8,16 +8,20 @@ const SOURCE = fs.readFileSync(new URL('./chat-shim.js', import.meta.url), 'utf8
 // Runs the shim against a fake window. `invoke` stands in for the `ask` command.
 function load(invoke) {
   const fetched = [];
+  const backs = [];
+  const listeners = [];
   const window = {
     fetch: (...args) => {
       fetched.push(args);
       return Promise.resolve('real fetch');
     },
     __TAURI__: { core: { invoke } },
+    history: { back: () => backs.push('back') },
+    addEventListener: (type, listener) => listeners.push([type, listener]),
   };
   window.window = window;
   vm.runInNewContext(SOURCE, { window, Response });
-  return { window, fetched };
+  return { window, fetched, backs, listeners };
 }
 
 const post = (body) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -71,9 +75,89 @@ test('a bad body is a 400 and never reaches the core', async () => {
   assert.equal(called, false);
 });
 
+test('the held-action, calendar and hardware requests reach the core with only their own fields', async () => {
+  const sent = [];
+  const { window } = load(async (_command, args) => {
+    sent.push(JSON.parse(args.line));
+    return '{"kind":"events"}';
+  });
+  for (const body of [
+    { confirm: 'abc' },
+    { confirm: 'abc', time: '2026-11-02T11:00:00' },
+    { cancel: 'abc' },
+    { upcoming: true },
+    { upcoming: true, from: '2026-11-01' },
+    { delete_event: 'uid-1' },
+    { hardware: true },
+  ]) {
+    const response = await window.fetch('/chat', post(body));
+    assert.equal(response.status, 200, JSON.stringify(body));
+  }
+  assert.deepEqual(sent, [
+    { id: 1, confirm: 'abc' },
+    { id: 2, confirm: 'abc', time: '2026-11-02T11:00:00' },
+    { id: 3, cancel: 'abc' },
+    { id: 4, upcoming: true },
+    { id: 5, upcoming: true, from: '2026-11-01' },
+    { id: 6, delete_event: 'uid-1' },
+    { id: 7, hardware: true },
+  ]);
+});
+
+test('a caller cannot choose the id', async () => {
+  const ids = [];
+  const { window } = load(async (_command, args) => {
+    ids.push(JSON.parse(args.line).id);
+    return '{}';
+  });
+  await window.fetch('/chat', post({ id: 99, hardware: true }));
+  assert.deepEqual(ids, [1]);
+});
+
+test('a body that mixes kinds or has a wrong field is a 400', async () => {
+  let called = false;
+  const { window } = load(async () => {
+    called = true;
+    return '{}';
+  });
+  for (const body of [
+    { hardware: true, upcoming: true },
+    { text: 'hi', language: 'en', confirm: 'abc' },
+    { cancel: 'abc', time: '11:00' },
+    { confirm: '' },
+    { confirm: 5 },
+    { upcoming: false },
+    { upcoming: true, from: 3 },
+    { hardware: 'yes' },
+    { delete_event: '' },
+    { language: 'en' },
+    [],
+    null,
+  ]) {
+    const response = await window.fetch('/chat', post(body));
+    assert.equal(response.status, 400, JSON.stringify(body));
+  }
+  assert.equal(called, false);
+});
+
 test('every other request goes to the real fetch', async () => {
   const { window, fetched } = load(async () => '{}');
   assert.equal(await window.fetch('../../locales/en/scarfeeos.ftl'), 'real fetch');
   assert.equal(await window.fetch('/chat'), 'real fetch');
   assert.equal(fetched.length, 2);
+});
+
+test('Alt+Left goes back, and other keys do not', () => {
+  const { backs, listeners } = load(async () => '{}');
+  const [[type, onKey]] = listeners;
+  assert.equal(type, 'keydown');
+  let prevented = 0;
+  const key = (fields) => onKey({ key: 'ArrowLeft', altKey: true, preventDefault: () => prevented++, ...fields });
+  key({});
+  key({ altKey: false });
+  key({ key: 'ArrowRight' });
+  key({ ctrlKey: true });
+  key({ shiftKey: true });
+  assert.deepEqual(backs, ['back']);
+  assert.equal(prevented, 1);
 });
