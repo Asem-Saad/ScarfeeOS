@@ -170,7 +170,7 @@ fn weekday_of(word: &str, prev: Option<&str>) -> Option<u32> {
 fn repeat_after(words: &[String], i: usize) -> Option<Repeat> {
     let next = words.get(i + 1).map(String::as_str)?;
     if next == "day" || next == "يوم" {
-        let is_weekday = words.get(i + 2).map_or(false, |w| weekday_of(w, Some(next)).is_some());
+        let is_weekday = words.get(i + 2).is_some_and(|w| weekday_of(w, Some(next)).is_some());
         return Some(if is_weekday { Repeat::Weekly } else { Repeat::Daily });
     }
     weekday_of(next, Some("كل")).map(|_| Repeat::Weekly)
@@ -258,7 +258,7 @@ pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
                 continue;
             }
         }
-        if marked || next.map_or(false, |n| day_part_of(n).is_some()) {
+        if marked || next.is_some_and(|n| day_part_of(n).is_some()) {
             time = clock(word);
         }
     }

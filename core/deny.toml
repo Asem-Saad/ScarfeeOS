@@ -1,0 +1,30 @@
+# License policy for ScarfeeOS dependencies. Follows docs/ip-and-licensing.md.
+# Run: cargo deny check licenses
+
+[graph]
+all-features = true
+
+[licenses]
+# Only the licenses listed here are accepted. Everything else is rejected,
+# which includes GPL, AGPL and LGPL families.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    # Unicode data licenses needed by the Rust ecosystem (e.g. unicode-ident).
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+confidence-threshold = 0.9
+
+# GPL and AGPL are not allowed for any crate: ScarfeeOS-owned code never links
+# to GPL libraries (docs/ip-and-licensing.md, rule 2). They are deliberately
+# absent from `allow` above.
+#
+# LGPL is not allowed by default. It is permitted only when dynamically linked,
+# which needs a manual, reviewed exception for the specific crate, e.g.:
+#   exceptions = [{ allow = ["LGPL-2.1-or-later"], crate = "some-crate" }]
+# Do not add LGPL to `allow`.
