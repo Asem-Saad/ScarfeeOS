@@ -14,7 +14,7 @@ Benchmark prompts used to choose default models. A model that fails the Arabic p
 | `dialect` | Only for dialect prompts: `msa`, `gulf`, `egyptian`, `levantine` |
 | `prompt` | The user message |
 | `expect` | What a correct answer must do (graded by a human or a checker) |
-| `tool` | For `command` prompts: the expected tool call, `{name, args}` |
+| `tool` | For `command` prompts: the expected tool call, `{name, args}`. `time` here is a description such as `tomorrow 10:00`, to be resolved against the run date; the model itself must return ISO 8601. |
 
 ## Tool schema (draft, mirrors the future core tool API)
 - `open_app(name)`

@@ -12,7 +12,7 @@ ScarfeeOS-owned code is licensed under **Apache-2.0** (see `LICENSE`), which inc
    - LGPL: only dynamically linked.
    - GPL/AGPL: allowed only as separate, unmodified programs that ScarfeeOS-owned code talks to at arm's length (the Linux kernel, the Fedora base, mpv if used). ScarfeeOS-owned code never links to GPL libraries. Source offers and notices are provided where the license requires them.
    - Every dependency and its license is recorded (SBOM) and checked in CI (e.g. `cargo deny`).
-3. **AI models and voices:** only models and voices under Apache-2.0 or MIT, with no custom or use-restricted terms. Excluded: Llama, Gemma, non-commercial voices (e.g. XTTS). The license is verified per model and per size (a model family can mix licenses) and recorded in `docs/models.md` with its training-data statement.
+3. **AI models and voices shipped with ScarfeeOS or downloaded to the device** (optional third-party services are covered by rule 7): only models and voices under Apache-2.0 or MIT, with no custom or use-restricted terms. Excluded: Llama, Gemma, non-commercial voices (e.g. XTTS). The license is verified per model and per size (a model family can mix licenses) and recorded in `docs/models.md` with its training-data statement.
 4. **Media formats and codecs:**
    - Bundled by default: royalty-free formats (AV1, VP9, Opus, Vorbis, FLAC, WebM, Ogg, Matroska) and MP3 (patents expired). AAC only after the patent status is verified.
    - H.264/H.265 and similar patent-licensed codecs are **not bundled**. The media player uses codecs already on the user's system or an optional add-on that the user installs themselves, as Fedora and other Linux distributions do.
@@ -26,4 +26,4 @@ ScarfeeOS-owned code is licensed under **Apache-2.0** (see `LICENSE`), which inc
 - Patent freedom-to-operate for core features (e.g. the voice agent).
 - Fedora trademark and redistribution terms, and GPL obligations of the base image.
 - Anthropic API terms.
-- Create `docs/models.md` and the CI license check.
+- Create the CI license check.

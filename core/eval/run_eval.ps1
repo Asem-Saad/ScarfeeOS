@@ -1,5 +1,5 @@
 # Runs prompts.jsonl against a local llama-server and writes results/<label>.jsonl.
-# Tool calls on `command` prompts are checked automatically; everything else needs human grading.
+# Only the tool name is checked automatically. Arguments, dates and everything else need human grading.
 #
 #   .\run_eval.ps1 -Label qwen3-4b-q4 -ServerUrl http://127.0.0.1:8080
 param(

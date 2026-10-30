@@ -51,8 +51,16 @@ pub struct Resolved {
     pub date: Date,
     /// Hour and minute in 24-hour time, when the text gives one.
     pub time: Option<(u32, u32)>,
-    /// True for "every Friday" or "كل جمعة".
-    pub weekly: bool,
+    pub repeat: Option<Repeat>,
+    /// True when the time could mean two things, such as "at 2" or "الساعة 11".
+    /// The caller should ask the user instead of trusting `time`.
+    pub ambiguous: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repeat {
+    Daily,
+    Weekly,
 }
 
 impl Resolved {
@@ -88,7 +96,10 @@ impl DayPart {
 
     fn to_24h(self, hour: u32) -> u32 {
         match self {
+            _ if hour == 0 => 0,
+            DayPart::Morning | DayPart::Night if hour == 12 => 0,
             DayPart::Morning => hour,
+            DayPart::Night if hour < 6 => hour,
             DayPart::Noon if (1..=6).contains(&hour) => hour + 12,
             DayPart::Noon => hour,
             _ if hour < 12 => hour + 12,
@@ -132,17 +143,37 @@ fn tokens(text: &str) -> Vec<String> {
     out
 }
 
-fn weekday_of(word: &str) -> Option<u32> {
+/// Forms without ال only count after يوم or كل: alone, احد means "someone"
+/// and سبت means "basket".
+fn weekday_of(word: &str, prev: Option<&str>) -> Option<u32> {
+    let named = matches!(prev, Some("يوم") | Some("كل"));
     match word {
-        "sunday" | "الاحد" | "احد" => Some(0),
-        "monday" | "الاثنين" | "اثنين" => Some(1),
-        "tuesday" | "الثلاثاء" | "ثلاثاء" => Some(2),
-        "wednesday" | "الاربعاء" | "اربعاء" => Some(3),
-        "thursday" | "الخميس" | "خميس" => Some(4),
-        "friday" | "الجمعه" | "جمعه" => Some(5),
-        "saturday" | "السبت" | "سبت" => Some(6),
+        "sunday" | "الاحد" => Some(0),
+        "monday" | "الاثنين" => Some(1),
+        "tuesday" | "الثلاثاء" => Some(2),
+        "wednesday" | "الاربعاء" => Some(3),
+        "thursday" | "الخميس" => Some(4),
+        "friday" | "الجمعه" => Some(5),
+        "saturday" | "السبت" => Some(6),
+        "احد" if named => Some(0),
+        "اثنين" if named => Some(1),
+        "ثلاثاء" if named => Some(2),
+        "اربعاء" if named => Some(3),
+        "خميس" if named => Some(4),
+        "جمعه" if named => Some(5),
+        "سبت" if named => Some(6),
         _ => None,
     }
+}
+
+/// Reads what follows "every" or "كل". "كل شيء" (everything) is not a repeat.
+fn repeat_after(words: &[String], i: usize) -> Option<Repeat> {
+    let next = words.get(i + 1).map(String::as_str)?;
+    if next == "day" || next == "يوم" {
+        let is_weekday = words.get(i + 2).map_or(false, |w| weekday_of(w, Some(next)).is_some());
+        return Some(if is_weekday { Repeat::Weekly } else { Repeat::Daily });
+    }
+    weekday_of(next, Some("كل")).map(|_| Repeat::Weekly)
 }
 
 fn day_part_of(word: &str) -> Option<DayPart> {
@@ -151,7 +182,7 @@ fn day_part_of(word: &str) -> Option<DayPart> {
         "noon" | "ظهرا" | "ظهر" | "الظهر" => Some(DayPart::Noon),
         "afternoon" | "pm" | "عصرا" | "عصر" | "العصر" => Some(DayPart::Afternoon),
         "evening" | "مساء" | "المساء" => Some(DayPart::Evening),
-        "night" | "tonight" | "ليلا" | "الليل" | "الليله" => Some(DayPart::Night),
+        "night" | "tonight" | "ليلا" | "الليل" | "بالليل" | "الليله" => Some(DayPart::Night),
         _ => None,
     }
 }
@@ -180,33 +211,37 @@ fn clock(word: &str) -> Option<(u32, u32)> {
 }
 
 /// Finds the first date and time mentioned in `text`, relative to `today`.
-/// A bare weekday means its next occurrence, never today. Returns None when
-/// the text mentions neither.
+/// A bare weekday means its next occurrence, never today. A part of the day
+/// alone is not enough, because صباح الخير and "great morning" are not plans.
+/// Returns None when the text gives no date or time. Pass only text already
+/// known to be about scheduling: "Today I ate lunch" still resolves to today.
 pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
     let words = tokens(&normalize(text));
     let mut offset = None;
     let mut time = None;
     let mut part = None;
-    let mut weekly = false;
+    let mut repeat = None;
 
     for (i, word) in words.iter().enumerate() {
         let next = words.get(i + 1).map(String::as_str);
         let prev = i.checked_sub(1).map(|p| words[p].as_str());
-        let after = prev == Some("بعد") || prev == Some("after");
+        let after = matches!(prev, Some("بعد") | Some("عقب") | Some("after"));
 
         match word.as_str() {
-            "every" | "كل" => weekly = true,
-            "today" | "اليوم" | "tonight" | "الليله" if offset.is_none() => offset = Some(0),
-            "tomorrow" | "غدا" | "غد" | "بكره" | "باكر" if offset.is_none() || after => {
+            "every" | "كل" => repeat = repeat.or(repeat_after(&words, i)),
+            "today" | "اليوم" | "النهارده" | "انهارده" | "tonight" | "الليله" if offset.is_none() => {
+                offset = Some(0);
+            }
+            "tomorrow" | "غدا" | "غد" | "بكره" | "بكرا" | "باكر" | "باجر" if offset.is_none() || after => {
                 offset = Some(if after { 2 } else { 1 });
             }
             _ => {}
         }
-        if let (None, Some(day)) = (offset, weekday_of(word)) {
+        if let (None, Some(day)) = (offset, weekday_of(word, prev)) {
             let ahead = (i64::from(day) - i64::from(today.weekday())).rem_euclid(7);
             offset = Some(if ahead == 0 { 7 } else { ahead });
         }
-        if part.is_none() {
+        if part.is_none() && next != Some("الخير") {
             part = day_part_of(word);
         }
         if time.is_some() {
@@ -228,19 +263,22 @@ pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
         }
     }
 
-    if offset.is_none() && time.is_none() && part.is_none() {
+    if offset.is_none() && time.is_none() {
         return None;
     }
-    let time = match (time, part) {
+    // "2 at night" is after midnight, so it falls on the next calendar day.
+    let (time, extra_day, ambiguous) = match (time, part) {
         (Some((h, m)), Some(p)) => {
-            let twelve_am = matches!(p, DayPart::Morning) && h == 12;
-            Some((if twelve_am { 0 } else { p.to_24h(h) }, m))
+            let small_hours = matches!(p, DayPart::Night) && (h == 12 || (1..6).contains(&h));
+            let unclear = small_hours || (matches!(p, DayPart::Evening) && h == 12);
+            (Some((p.to_24h(h), m)), i64::from(small_hours), unclear)
         }
-        (Some(t), None) => Some(t),
-        (None, Some(p)) => Some((p.default_hour(), 0)),
-        (None, None) => None,
+        (Some((h, m)), None) => (Some((h, m)), 0, (1..=12).contains(&h)),
+        (None, Some(p)) => (Some((p.default_hour(), 0)), 0, false),
+        (None, None) => (None, 0, false),
     };
-    Some(Resolved { date: today.add_days(offset.unwrap_or(0)), time, weekly })
+    let date = today.add_days(offset.unwrap_or(0) + extra_day);
+    Some(Resolved { date, time, repeat, ambiguous })
 }
 
 #[cfg(test)]
@@ -293,11 +331,80 @@ mod tests {
     }
 
     #[test]
-    fn weekly_is_flagged() {
+    fn repeats_are_flagged() {
         let r = resolve("ذكّرني أعمل backup للـ laptop كل جمعة.", TODAY).unwrap();
-        assert!(r.weekly);
+        assert_eq!(r.repeat, Some(Repeat::Weekly));
         assert_eq!(r.date, Date::new(2026, 11, 6));
-        assert!(resolve("back up every Friday", TODAY).unwrap().weekly);
+        let repeat = |text| resolve(text, TODAY).unwrap().repeat;
+        assert_eq!(repeat("back up every Friday"), Some(Repeat::Weekly));
+        assert_eq!(repeat("كل يوم جمعة"), Some(Repeat::Weekly));
+        assert_eq!(repeat("كل يوم الساعة 9 صباحا"), Some(Repeat::Daily));
+        assert_eq!(repeat("every day at 9 am"), Some(Repeat::Daily));
+    }
+
+    #[test]
+    fn every_without_a_day_is_not_a_repeat() {
+        assert_eq!(resolve("كل شيء تمام", TODAY), None);
+        let r = resolve("كل شيء تمام يوم الجمعة", TODAY).unwrap();
+        assert_eq!(r.repeat, None);
+        assert_eq!(r.date, Date::new(2026, 11, 6));
+    }
+
+    #[test]
+    fn ordinary_sentences_are_not_dates() {
+        for text in [
+            "I had a great morning",
+            "صباح الخير",
+            "مساء الخير",
+            "هل كلمك احد؟",
+            "العصر الحجري",
+            "عندي سبت كبير",
+            "Find file 5.",
+            "open chapter 3",
+            "meeting 2 at home",
+        ] {
+            assert_eq!(resolve(text, TODAY), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn greeting_does_not_set_the_time() {
+        assert_eq!(iso("صباح الخير، الاجتماع بكرة"), "2026-10-31");
+    }
+
+    #[test]
+    fn dialect_words() {
+        assert_eq!(iso("النهاردة الساعة 5 مساء"), "2026-10-30T17:00:00");
+        assert_eq!(iso("عقب باكر"), "2026-11-01");
+        assert_eq!(iso("باجر"), "2026-10-31");
+        assert_eq!(iso("يوم احد"), "2026-11-01");
+    }
+
+    #[test]
+    fn night_hours_fall_after_midnight() {
+        assert_eq!(iso("غدا الساعة 12 ليلا"), "2026-11-01T00:00:00");
+        assert_eq!(iso("بكرة الساعة 2 بالليل"), "2026-11-01T02:00:00");
+        assert_eq!(iso("tomorrow at 11 at night"), "2026-10-31T23:00:00");
+        assert!(resolve("غدا الساعة 12 ليلا", TODAY).unwrap().ambiguous);
+        assert!(!resolve("tomorrow at 11 at night", TODAY).unwrap().ambiguous);
+    }
+
+    #[test]
+    fn unclear_times_are_flagged() {
+        let ambiguous = |text| resolve(text, TODAY).unwrap().ambiguous;
+        assert!(ambiguous("الساعة 11"));
+        assert!(ambiguous("meet at 2"));
+        assert!(ambiguous("موعدنا الساعة الثانية"));
+        assert!(ambiguous("غدا الساعة 12 مساء"));
+        assert!(!ambiguous("tomorrow at 14:30"));
+        assert!(!ambiguous("tomorrow at 2 pm"));
+        assert!(!ambiguous("بكرة الصبح"));
+    }
+
+    #[test]
+    fn twenty_four_hour_times_survive_a_day_part() {
+        assert_eq!(iso("tomorrow at 14:00 pm"), "2026-10-31T14:00:00");
+        assert_eq!(iso("غدا الساعة 13:00 ظهرا"), "2026-10-31T13:00:00");
     }
 
     #[test]
