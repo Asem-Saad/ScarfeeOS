@@ -14,10 +14,12 @@
 use std::fmt;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{ErrorKind, Read};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -33,6 +35,8 @@ const WAV_HEADER_BYTES: u64 = 44;
 pub enum RecordError {
     /// Neither `pw-record` nor `arecord` is on the search path.
     NoRecorder,
+    /// Recording is not supported on this platform (only Unix systems for now).
+    Unsupported,
     /// The recorder could not be started or read, or the file could not be prepared.
     Io(String),
     /// The recorder ended with a failure status (`None` when killed by a signal).
@@ -47,6 +51,7 @@ impl fmt::Display for RecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RecordError::NoRecorder => write!(f, "no recording program found: install pw-record or arecord"),
+            RecordError::Unsupported => write!(f, "recording is not supported on this platform"),
             RecordError::Io(why) => write!(f, "recording failed: {why}"),
             RecordError::NonZeroExit { code: Some(code), stderr } => {
                 write!(f, "recording program exited with status {code}: {stderr}")
@@ -154,13 +159,53 @@ impl Default for CommandRecorder {
     }
 }
 
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     fs::metadata(path).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }
 
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn exit_signal(status: &ExitStatus) -> Option<i32> {
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn exit_signal(_status: &ExitStatus) -> Option<i32> {
+    None
+}
+
+#[cfg(unix)]
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    DirBuilder::new().mode(0o700).create(dir)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    DirBuilder::new().create(dir)
+}
+
+#[cfg(unix)]
+fn create_private_file(file: &Path) -> std::io::Result<fs::File> {
+    OpenOptions::new().write(true).create_new(true).mode(0o600).open(file)
+}
+
+#[cfg(not(unix))]
+fn create_private_file(file: &Path) -> std::io::Result<fs::File> {
+    OpenOptions::new().write(true).create_new(true).open(file)
+}
+
 impl Recorder for CommandRecorder {
     fn record(&self, wav: &Path, stop: &AtomicBool) -> Result<(), RecordError> {
+        // Stopping the recorder cleanly needs SIGTERM, which only Unix has.
+        if cfg!(not(unix)) {
+            return Err(RecordError::Unsupported);
+        }
         let mut command = self.command(wav)?;
         command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|e| match e.kind() {
@@ -205,7 +250,7 @@ impl Recorder for CommandRecorder {
         let stderr = stderr_reader.join().unwrap_or_default();
         const SIGINT: i32 = 2;
         const SIGTERM: i32 = 15;
-        let stopped_by_us = stop_asked_at.is_some() && matches!(status.signal(), Some(SIGINT | SIGTERM));
+        let stopped_by_us = stop_asked_at.is_some() && matches!(exit_signal(&status), Some(SIGINT | SIGTERM));
         if !status.success() && !stopped_by_us {
             return Err(RecordError::NonZeroExit { code: status.code(), stderr: stderr_tail(&stderr) });
         }
@@ -272,14 +317,9 @@ impl TempWav {
             NEXT_TEMP.fetch_add(1, Ordering::SeqCst)
         ));
         // Fails if the name exists, so another user cannot pre-create it.
-        DirBuilder::new().mode(0o700).create(&dir).map_err(|e| RecordError::Io(format!("temporary directory: {e}")))?;
+        create_private_dir(&dir).map_err(|e| RecordError::Io(format!("temporary directory: {e}")))?;
         let temp = TempWav { wav: dir.join("turn.wav"), dir };
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp.wav)
-            .map_err(|e| RecordError::Io(format!("temporary file: {e}")))?;
+        create_private_file(&temp.wav).map_err(|e| RecordError::Io(format!("temporary file: {e}")))?;
         Ok(temp)
     }
 }
@@ -360,9 +400,6 @@ mod tests {
     use crate::tools::{Clock, ClockError, LocalTime};
     use serde_json::Value;
     use std::cell::{Cell, RefCell};
-    use std::os::unix::fs::PermissionsExt;
-    use std::sync::Mutex;
-
     struct FixedClock;
     impl Clock for FixedClock {
         fn now(&self) -> Result<LocalTime, ClockError> {
@@ -386,6 +423,22 @@ mod tests {
         }
     }
 
+    /// Always true off Unix, where there are no modes to check.
+    fn is_private(wav: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir_mode = fs::metadata(wav.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+            let file_mode = fs::metadata(wav).unwrap().permissions().mode() & 0o777;
+            dir_mode == 0o700 && file_mode == 0o600
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = wav;
+            true
+        }
+    }
+
     struct FakeRecorder {
         result: Result<(), RecordError>,
         seen: RefCell<Option<PathBuf>>,
@@ -402,9 +455,7 @@ mod tests {
     impl Recorder for FakeRecorder {
         fn record(&self, wav: &Path, _stop: &AtomicBool) -> Result<(), RecordError> {
             *self.seen.borrow_mut() = Some(wav.to_path_buf());
-            let dir_mode = fs::metadata(wav.parent().unwrap()).unwrap().permissions().mode() & 0o777;
-            let file_mode = fs::metadata(wav).unwrap().permissions().mode() & 0o777;
-            self.saw_private.set(dir_mode == 0o700 && file_mode == 0o600);
+            self.saw_private.set(is_private(wav));
             fs::write(wav, b"fake audio").unwrap();
             self.result.clone()
         }
@@ -539,138 +590,144 @@ mod tests {
         let a = TempWav::new().unwrap();
         let b = TempWav::new().unwrap();
         assert_ne!(a.dir, b.dir);
-        assert_eq!(fs::metadata(&a.dir).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(fs::metadata(&a.wav).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(is_private(&a.wav));
         let (dir, wav) = (a.dir.clone(), a.wav.clone());
         drop(a);
         assert!(!dir.exists() && !wav.exists());
         assert!(b.dir.exists());
     }
 
-    // The tests below run fake recording programs from a scratch directory.
+    #[cfg(unix)]
+    mod fake_programs {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Mutex;
 
-    /// Writing and starting scripts from parallel threads can fail with
-    /// "text file busy", so the tests that do it run one at a time.
-    static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
+        // The tests below run fake recording programs from a scratch directory.
 
-    struct Bin(TempWav);
+        /// Writing and starting scripts from parallel threads can fail with
+        /// "text file busy", so the tests that do it run one at a time.
+        static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
 
-    impl Bin {
-        fn new() -> Bin {
-            Bin(TempWav::new().unwrap())
+        struct Bin(TempWav);
+
+        impl Bin {
+            fn new() -> Bin {
+                Bin(TempWav::new().unwrap())
+            }
+
+            fn dir(&self) -> PathBuf {
+                self.0.dir.clone()
+            }
+
+            fn script(&self, name: &str, body: &str) {
+                let path = self.0.dir.join(name);
+                fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+
+            fn recorder(&self, max: Duration) -> CommandRecorder {
+                CommandRecorder::new(max).with_grace(Duration::from_millis(500)).with_search_path(vec![self.dir()])
+            }
         }
 
-        fn dir(&self) -> PathBuf {
-            self.0.dir.clone()
+        /// Writes its arguments next to the script, makes some audio in the last
+        /// argument, then waits to be stopped.
+        const RECORDING_BODY: &str =
+            "for last; do :; done\nprintf '%s\\n' \"$@\" > \"$0.args\"\nhead -c 200 /dev/zero > \"$last\"\nexec sleep 30";
+
+        #[test]
+        fn pw_record_is_preferred_and_gets_an_argument_list() {
+            let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let bin = Bin::new();
+            bin.script("pw-record", RECORDING_BODY);
+            bin.script("arecord", "exit 9");
+            let out = TempWav::new().unwrap();
+            let odd = out.dir.join("odd; $(touch pwned) `id` * -x.wav");
+
+            let started = Instant::now();
+            bin.recorder(Duration::from_millis(300)).record(&odd, &AtomicBool::new(false)).unwrap();
+            assert!(started.elapsed() < Duration::from_secs(5));
+
+            let args = fs::read_to_string(bin.dir().join("pw-record.args")).unwrap();
+            let args: Vec<&str> = args.lines().collect();
+            assert_eq!(args[..6], ["--rate", "16000", "--channels", "1", "--format", "s16"]);
+            assert_eq!(args[6], odd.to_str().unwrap());
+            assert!(!out.dir.join("pwned").exists());
         }
 
-        fn script(&self, name: &str, body: &str) {
-            let path = self.0.dir.join(name);
-            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        #[test]
+        fn arecord_is_used_when_pw_record_is_missing() {
+            let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let bin = Bin::new();
+            bin.script("arecord", RECORDING_BODY);
+            let out = TempWav::new().unwrap();
+
+            bin.recorder(Duration::from_millis(300)).record(&out.wav, &AtomicBool::new(false)).unwrap();
+
+            let args = fs::read_to_string(bin.dir().join("arecord.args")).unwrap();
+            let args: Vec<&str> = args.lines().collect();
+            assert_eq!(args, ["-q", "-t", "wav", "-f", "S16_LE", "-r", "16000", "-c", "1", out.wav.to_str().unwrap()]);
         }
 
-        fn recorder(&self, max: Duration) -> CommandRecorder {
-            CommandRecorder::new(max).with_grace(Duration::from_millis(500)).with_search_path(vec![self.dir()])
+        #[test]
+        fn no_recorder_is_reported() {
+            let bin = Bin::new();
+            let out = TempWav::new().unwrap();
+            let err = bin.recorder(Duration::from_secs(1)).record(&out.wav, &AtomicBool::new(false)).unwrap_err();
+            assert_eq!(err, RecordError::NoRecorder);
         }
-    }
 
-    /// Writes its arguments next to the script, makes some audio in the last
-    /// argument, then waits to be stopped.
-    const RECORDING_BODY: &str =
-        "for last; do :; done\nprintf '%s\\n' \"$@\" > \"$0.args\"\nhead -c 200 /dev/zero > \"$last\"\nexec sleep 30";
+        #[test]
+        fn stop_request_ends_recording_long_before_the_maximum() {
+            let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let bin = Bin::new();
+            bin.script("pw-record", RECORDING_BODY);
+            let out = TempWav::new().unwrap();
+            let stop = AtomicBool::new(false);
 
-    #[test]
-    fn pw_record_is_preferred_and_gets_an_argument_list() {
-        let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let bin = Bin::new();
-        bin.script("pw-record", RECORDING_BODY);
-        bin.script("arecord", "exit 9");
-        let out = TempWav::new().unwrap();
-        let odd = out.dir.join("odd; $(touch pwned) `id` * -x.wav");
-
-        let started = Instant::now();
-        bin.recorder(Duration::from_millis(300)).record(&odd, &AtomicBool::new(false)).unwrap();
-        assert!(started.elapsed() < Duration::from_secs(5));
-
-        let args = fs::read_to_string(bin.dir().join("pw-record.args")).unwrap();
-        let args: Vec<&str> = args.lines().collect();
-        assert_eq!(args[..6], ["--rate", "16000", "--channels", "1", "--format", "s16"]);
-        assert_eq!(args[6], odd.to_str().unwrap());
-        assert!(!out.dir.join("pwned").exists());
-    }
-
-    #[test]
-    fn arecord_is_used_when_pw_record_is_missing() {
-        let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let bin = Bin::new();
-        bin.script("arecord", RECORDING_BODY);
-        let out = TempWav::new().unwrap();
-
-        bin.recorder(Duration::from_millis(300)).record(&out.wav, &AtomicBool::new(false)).unwrap();
-
-        let args = fs::read_to_string(bin.dir().join("arecord.args")).unwrap();
-        let args: Vec<&str> = args.lines().collect();
-        assert_eq!(args, ["-q", "-t", "wav", "-f", "S16_LE", "-r", "16000", "-c", "1", out.wav.to_str().unwrap()]);
-    }
-
-    #[test]
-    fn no_recorder_is_reported() {
-        let bin = Bin::new();
-        let out = TempWav::new().unwrap();
-        let err = bin.recorder(Duration::from_secs(1)).record(&out.wav, &AtomicBool::new(false)).unwrap_err();
-        assert_eq!(err, RecordError::NoRecorder);
-    }
-
-    #[test]
-    fn stop_request_ends_recording_long_before_the_maximum() {
-        let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let bin = Bin::new();
-        bin.script("pw-record", RECORDING_BODY);
-        let out = TempWav::new().unwrap();
-        let stop = AtomicBool::new(false);
-
-        let started = Instant::now();
-        thread::scope(|s| {
-            s.spawn(|| {
-                thread::sleep(Duration::from_millis(300));
-                stop.store(true, Ordering::SeqCst);
+            let started = Instant::now();
+            thread::scope(|s| {
+                s.spawn(|| {
+                    thread::sleep(Duration::from_millis(300));
+                    stop.store(true, Ordering::SeqCst);
+                });
+                bin.recorder(Duration::from_secs(60)).record(&out.wav, &stop).unwrap();
             });
-            bin.recorder(Duration::from_secs(60)).record(&out.wav, &stop).unwrap();
-        });
-        assert!(started.elapsed() < Duration::from_secs(10));
-    }
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
 
-    #[test]
-    fn a_recorder_that_ignores_the_stop_is_killed() {
-        let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let bin = Bin::new();
-        bin.script("pw-record", &format!("trap '' TERM\n{RECORDING_BODY}"));
-        let out = TempWav::new().unwrap();
+        #[test]
+        fn a_recorder_that_ignores_the_stop_is_killed() {
+            let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let bin = Bin::new();
+            bin.script("pw-record", &format!("trap '' TERM\n{RECORDING_BODY}"));
+            let out = TempWav::new().unwrap();
 
-        let started = Instant::now();
-        let err = bin.recorder(Duration::from_millis(200)).record(&out.wav, &AtomicBool::new(false)).unwrap_err();
-        assert_eq!(err, RecordError::Timeout(Duration::from_millis(500)));
-        assert!(started.elapsed() < Duration::from_secs(10));
-    }
+            let started = Instant::now();
+            let err = bin.recorder(Duration::from_millis(200)).record(&out.wav, &AtomicBool::new(false)).unwrap_err();
+            assert_eq!(err, RecordError::Timeout(Duration::from_millis(500)));
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
 
-    #[test]
-    fn a_failing_recorder_reports_its_stderr() {
-        let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let bin = Bin::new();
-        bin.script("arecord", "echo 'no such device' >&2\nexit 1");
-        let out = TempWav::new().unwrap();
-        let err = bin.recorder(Duration::from_secs(5)).record(&out.wav, &AtomicBool::new(false)).unwrap_err();
-        assert_eq!(err, RecordError::NonZeroExit { code: Some(1), stderr: "no such device".to_string() });
-    }
+        #[test]
+        fn a_failing_recorder_reports_its_stderr() {
+            let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let bin = Bin::new();
+            bin.script("arecord", "echo 'no such device' >&2\nexit 1");
+            let out = TempWav::new().unwrap();
+            let err = bin.recorder(Duration::from_secs(5)).record(&out.wav, &AtomicBool::new(false)).unwrap_err();
+            assert_eq!(err, RecordError::NonZeroExit { code: Some(1), stderr: "no such device".to_string() });
+        }
 
-    #[test]
-    fn a_recorder_that_leaves_no_audio_is_reported() {
-        let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let bin = Bin::new();
-        bin.script("arecord", "exit 0");
-        let out = TempWav::new().unwrap();
-        let err = bin.recorder(Duration::from_secs(5)).record(&out.wav, &AtomicBool::new(false)).unwrap_err();
-        assert_eq!(err, RecordError::NoAudio);
+        #[test]
+        fn a_recorder_that_leaves_no_audio_is_reported() {
+            let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let bin = Bin::new();
+            bin.script("arecord", "exit 0");
+            let out = TempWav::new().unwrap();
+            let err = bin.recorder(Duration::from_secs(5)).record(&out.wav, &AtomicBool::new(false)).unwrap_err();
+            assert_eq!(err, RecordError::NoAudio);
+        }
     }
 }

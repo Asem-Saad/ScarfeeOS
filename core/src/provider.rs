@@ -94,7 +94,7 @@ fn http_host(url: &str) -> Result<&str, String> {
 }
 
 fn is_loopback(host: &str) -> bool {
-    host.parse::<IpAddr>().map_or(false, |ip| ip.is_loopback())
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 impl Provider for LocalProvider {

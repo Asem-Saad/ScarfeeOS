@@ -14,6 +14,9 @@
 //! Response: {"id": 1, "kind": "...", ...}. A request that cannot be read gets
 //! {"id": <the id if it had one, else null>, "kind": "error", "message": "..."}.
 //!
+//! `time_only` has the `time` the user wrote and nothing held: the message was
+//! only a time, so the panel asks what the user wants at that time.
+//!
 //! `run` has a `result` saying what happened, `{"ok": true, "type": ...}` or
 //! `{"ok": false, "error": {"code", "message"}}`. `needs_clarification` and
 //! `needs_confirmation` have an `action_id` and have run nothing; a confirm
@@ -164,6 +167,7 @@ fn response(id: Value, outcome: &Outcome, executor: &mut Executor) -> Value {
         Outcome::NeedsClarification(call) => held_body(executor, Held::Clarification, "needs_clarification", call),
         Outcome::NeedsConfirmation(call) => held_body(executor, Held::Confirmation, "needs_confirmation", call),
         Outcome::MissingTime(call) => tool_body("missing_time", call),
+        Outcome::TimeOnly(time) => json!({"kind": "time_only", "time": time}),
         Outcome::Error(message) => json!({"kind": "error", "message": message}),
         Outcome::Declined => json!({"kind": "declined"}),
         Outcome::HijriApprox { gregorian, hijri } => json!({
@@ -353,7 +357,7 @@ mod tests {
         );
         let m = model(call("create_reminder", r#"{"text":"x","time":"2020-01-01T11:00:00"}"#));
         assert_eq!(
-            without_action_id(ask(&m, &json!({"id": 9, "text": "الساعة 11", "language": "ar"}))),
+            without_action_id(ask(&m, &json!({"id": 9, "text": "ذكرني الساعة 11 x", "language": "ar"}))),
             json!({"id": 9, "kind": "needs_clarification", "tool": "create_reminder", "arguments": {
                 "text": "x", "time": "2026-10-30T11:00:00", "repeat": null,
             }})
@@ -365,6 +369,16 @@ mod tests {
                 "text": "call the bank", "time": "", "repeat": null,
             }})
         );
+    }
+
+    #[test]
+    fn a_message_that_is_only_a_time_asks_what_to_do_and_holds_nothing() {
+        let m = model(Ok(ModelReply::Text("الساعة الآن 11 صباحًا".into())));
+        assert_eq!(
+            ask(&m, &json!({"id": 4, "text": "الساعة 11", "language": "ar"})),
+            json!({"id": 4, "kind": "time_only", "time": "11"})
+        );
+        assert_eq!(ask(&m, &req("at 3:30pm")), json!({"id": 7, "kind": "time_only", "time": "3:30pm"}));
     }
 
     #[test]
@@ -539,7 +553,7 @@ mod tests {
     fn a_held_call_waits_for_its_confirm_and_runs_once() {
         let mut env = Env::new();
         let m = model(call("create_reminder", r#"{"text":"x","time":"2020-01-01T11:00:00"}"#));
-        let held = ask_in(&m, &mut env, &json!({"id": 9, "text": "الساعة 11", "language": "ar"}));
+        let held = ask_in(&m, &mut env, &json!({"id": 9, "text": "ذكرني الساعة 11 x", "language": "ar"}));
         assert_eq!(held["kind"], "needs_clarification");
         assert!(held.get("result").is_none() && !env.calendar.exists());
         let id = action_id(&held);
@@ -566,7 +580,7 @@ mod tests {
     fn a_bad_time_keeps_the_action_and_the_guess_runs_without_one() {
         let mut env = Env::new();
         let m = model(call("create_reminder", r#"{"text":"x","time":"2020-01-01T11:00:00"}"#));
-        let id = action_id(&ask_in(&m, &mut env, &json!({"id": 1, "text": "الساعة 11", "language": "ar"})));
+        let id = action_id(&ask_in(&m, &mut env, &json!({"id": 1, "text": "ذكرني الساعة 11 x", "language": "ar"})));
         let r = ask_in(&m, &mut env, &json!({"id": 2, "confirm": id, "time": "eleven"}));
         assert_eq!(r["kind"], "error", "{r}");
         assert!(!env.calendar.exists());

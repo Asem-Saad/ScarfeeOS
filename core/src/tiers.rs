@@ -209,8 +209,8 @@ mod tests {
         let gib = |m: u64| m as f64 / GB as f64;
         assert!((gib(QWEN3_8B.memory_mib + JAIS_3_3_7B.memory_mib) - 9.8).abs() < 0.05);
         assert!((gib(QWEN3_4B.memory_mib + JAIS_3_3_7B.memory_mib) - 7.7).abs() < 0.05);
-        assert!(QWEN3_4B.measured && QWEN3_8B.measured && JAIS_3_3_7B.measured);
-        assert!(!LITE_MODEL.measured);
+        const { assert!(QWEN3_4B.measured && QWEN3_8B.measured && JAIS_3_3_7B.measured) };
+        const { assert!(!LITE_MODEL.measured) };
         assert_eq!(LITE_MODEL.file, QWEN3_4B.file);
     }
 }

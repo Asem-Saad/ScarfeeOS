@@ -9,9 +9,10 @@
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
-use std::fs::{DirBuilder, File};
-use std::io::Read;
+use std::fs::DirBuilder;
+#[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -71,11 +72,12 @@ impl Executor {
     /// The real system: the user's home folder as the file root, the installed
     /// apps, and `scarfeeos/calendar.ics` in the user's data directory.
     pub fn from_env() -> Result<Self, String> {
-        let home = std::env::var_os("HOME")
+        let home = home_dir().ok_or("HOME is not set")?;
+        let config_dir = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .filter(|h| h.is_absolute())
-            .ok_or("HOME is not set")?;
-        let files = FileSandbox::new(FilesConfig::from_env().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            .filter(|c| c.is_absolute())
+            .unwrap_or_else(|| home.join(".config"));
+        let files = FileSandbox::new(FilesConfig::for_home(&home, &config_dir)).map_err(|e| e.to_string())?;
         let paths = SystemPaths::from_vars(
             &home,
             std::env::var_os("XDG_DATA_HOME").as_deref(),
@@ -180,11 +182,11 @@ impl Executor {
         match call {
             ToolCall::CreateReminder { .. } | ToolCall::ScheduleMeeting { .. } => {
                 if let Some(dir) = &self.calendar_dir {
-                    DirBuilder::new()
-                        .recursive(true)
-                        .mode(0o700)
-                        .create(dir)
-                        .map_err(|e| CalendarError::Io(e.to_string()))?;
+                    let mut builder = DirBuilder::new();
+                    builder.recursive(true);
+                    #[cfg(unix)]
+                    builder.mode(0o700);
+                    builder.create(dir).map_err(|e| CalendarError::Io(e.to_string()))?;
                 }
                 let event = self.calendar.add(&*self.utc, call)?;
                 Ok(json!({"type": "event", "event": event_json(&event)}))
@@ -267,8 +269,8 @@ impl From<CalendarError> for Failure {
 
 /// Starts an app by running its argument list with `Command`. No shell is
 /// involved, so nothing in the list is split, expanded or interpreted again.
-/// The app gets no terminal and its own process group, and cannot write to the
-/// channel the shell reads from.
+/// The app gets no terminal and, on Unix, its own process group, and cannot
+/// write to the channel the shell reads from.
 pub struct CommandLauncher;
 
 impl Launcher for CommandLauncher {
@@ -277,14 +279,11 @@ impl Launcher for CommandLauncher {
             return Err(LaunchError("the app needs a terminal, which is not supported yet".into()));
         }
         let (program, args) = app.exec.split_first().ok_or_else(|| LaunchError("the app has no command".into()))?;
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(|e| LaunchError(format!("{program}: {e}")))?;
+        let mut command = Command::new(program);
+        command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command.spawn().map_err(|e| LaunchError(format!("{program}: {e}")))?;
         // Reaps the app when it quits, so it does not stay as a zombie.
         std::thread::spawn(move || {
             let _ = child.wait();
@@ -317,14 +316,52 @@ impl SystemPaths {
     }
 }
 
+/// The user's home folder: `HOME`, and on Windows `USERPROFILE` when `HOME` is
+/// not set. Only an absolute path counts.
+fn home_dir() -> Option<PathBuf> {
+    let var = std::env::var_os("HOME").or_else(|| if cfg!(windows) { std::env::var_os("USERPROFILE") } else { None });
+    var.map(PathBuf::from).filter(|h| h.is_absolute())
+}
+
 /// 128 bits from the system's random source. There is no weaker fallback: an
 /// id someone could guess would let them confirm an action.
+#[cfg(unix)]
 fn random_id() -> Result<String, String> {
+    use std::fs::File;
+    use std::io::Read;
+
     let mut bytes = [0u8; 16];
     File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut bytes))
         .map_err(|e| format!("cannot make an action id: {e}"))?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// DEVELOPMENT ONLY, compiled under `cfg(windows)` so that the crate can be
+/// built and run on a developer's Windows machine. ScarfeeOS ships on Linux,
+/// which uses `/dev/urandom` above. The standard library has no documented
+/// secure random source and no dependency may be added, so this takes the
+/// randomly keyed hashers that the standard library seeds from the operating
+/// system, and mixes in the clock and a counter so that ids differ. That is
+/// unpredictable in practice but not a vetted CSPRNG: do not ship it.
+#[cfg(windows)]
+fn random_id() -> Result<String, String> {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .map_err(|e| format!("cannot make an action id: {e}"))?;
+    let part = |salt: u64| {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u64(salt ^ nanos);
+        hasher.write_u64(COUNTER.fetch_add(1, Ordering::SeqCst));
+        hasher.finish()
+    };
+    Ok(format!("{:016x}{:016x}", part(1), part(2)))
 }
 
 fn with_time(call: &ToolCall, time: &str) -> ToolCall {

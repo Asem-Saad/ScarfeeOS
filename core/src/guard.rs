@@ -288,6 +288,68 @@ fn live_data_in_sentence(sentence: &str) -> Option<LiveData> {
     }
 }
 
+// Words that may stand around a time in a message that is only a time. Normalized form.
+const TIME_MARKERS: &[&str] = &["at", "oclock", "am", "pm", "الساعه", "عند", "ص", "م"];
+const TIME_FILLER: &[&str] = &[
+    "around", "about", "by", "the", "its", "time", "please", "hey", "hi", "ok", "okay", "morning", "evening",
+    "night", "noon", "afternoon", "حوالي", "تقريبا", "في", "ب", "صباحا", "مساء", "ظهرا", "عصرا", "ليلا", "فجرا",
+    "الصباح", "المساء", "الظهر", "الليل", "من", "فضلك", "لو", "سمحت", "طيب", "يا", "بعد",
+];
+
+/// A time of day written as digits: `11`, `3:30`, `3pm`, `3:30pm`. Returns it
+/// with `true` when it has a minute part or am/pm, which only a time has.
+fn time_token(word: &str) -> Option<(String, bool)> {
+    let (clock, suffix) = match word.find(|c: char| c.is_alphabetic()) {
+        Some(i) => (&word[..i], &word[i..]),
+        None => (word, ""),
+    };
+    if !matches!(suffix, "" | "am" | "pm") {
+        return None;
+    }
+    let (hour, minute) = match clock.split_once(':') {
+        Some((h, m)) => (h, Some(m)),
+        None => (clock, None),
+    };
+    let digits = |t: &str, len: std::ops::RangeInclusive<usize>| -> Option<u32> {
+        if len.contains(&t.len()) && t.bytes().all(|b| b.is_ascii_digit()) { t.parse().ok() } else { None }
+    };
+    let hour_n = digits(hour, 1..=2)?;
+    let minute_n = match minute {
+        Some(m) => Some(digits(m, 2..=2)?),
+        None => None,
+    };
+    let valid = if suffix.is_empty() { hour_n <= 23 } else { (1..=12).contains(&hour_n) };
+    (valid && minute_n.is_none_or(|m| m <= 59)).then(|| (word.to_string(), minute.is_some() || !suffix.is_empty()))
+}
+
+/// When the whole message is only a time of day ("الساعة 11", "at 3:30 pm",
+/// "11:15") and asks for nothing, returns that time as written. A model asked
+/// about such a message tends to answer it as the current time, which it does
+/// not know, so the caller asks the user what they want instead. A message with
+/// any other word in it, such as "what time is it" or "remind me at 11", is not
+/// a bare time.
+pub fn bare_time(user_text: &str) -> Option<String> {
+    let text = normalize(user_text).replace("a.m", "am").replace("p.m", "pm");
+    let mut time = None;
+    let mut marked = false;
+    for word in text.split(|c: char| !c.is_alphanumeric() && c != ':').map(|w| w.trim_matches(':')) {
+        if word.is_empty() {
+            continue;
+        }
+        if let Some((token, own_marker)) = time_token(word) {
+            if time.replace(token).is_some() {
+                return None;
+            }
+            marked |= own_marker;
+        } else if TIME_MARKERS.contains(&word) {
+            marked = true;
+        } else if !TIME_FILLER.contains(&word) {
+            return None;
+        }
+    }
+    time.filter(|_| marked)
+}
+
 /// Tells whether the user asks to translate. A translation request is not a
 /// request to change the system language.
 pub fn asks_to_translate(user_text: &str) -> bool {

@@ -157,6 +157,7 @@ fn describe(outcome: &Outcome) -> String {
         Outcome::NeedsClarification(call) => format!("ask the user to confirm the time: {call:?}"),
         Outcome::NeedsConfirmation(call) => format!("ask the user to confirm before running: {call:?}"),
         Outcome::MissingTime(call) => format!("ask the user for a date and time: {call:?}"),
+        Outcome::TimeOnly(time) => format!("ask the user what they want at {time}"),
         Outcome::Declined => "declined: religious content is not provided".into(),
         Outcome::HijriApprox { gregorian, hijri } => format!(
             "about {} {} {} AH ({:04}-{:02}-{:02}), approximate",

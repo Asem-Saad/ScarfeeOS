@@ -49,6 +49,10 @@ pub enum Outcome {
     NeedsConfirmation(ToolCall),
     /// The text names no date or time. Ask the user. The call has an empty time.
     MissingTime(ToolCall),
+    /// The whole message is only a time of day, such as "الساعة 11", with no
+    /// request. Ask the user what they want at that time. The model was not
+    /// called, so the time is never answered as the current time.
+    TimeOnly(String),
     Error(String),
 }
 
@@ -80,6 +84,11 @@ impl<'a> Assistant<'a> {
             Some(LiveData::Time) => return self.time_outcome(requested_place(user_text).as_deref()),
             Some(live) => return Outcome::CannotDoOffline(live),
             None => {}
+        }
+        if !religious {
+            if let Some(time) = guard::bare_time(user_text) {
+                return Outcome::TimeOnly(time);
+            }
         }
         if !religious && guard::asks_for_hijri(user_text) {
             return match gregorian_date_in(user_text) {
@@ -601,7 +610,7 @@ mod tests {
     #[test]
     fn bare_arabic_hour_needs_clarification() {
         let m = model(call("create_reminder", r#"{"text":"x","time":"2020-01-01T11:00:00"}"#));
-        let (outcome, _) = turn(&m, "الساعة 11", Language::Arabic);
+        let (outcome, _) = turn(&m, "ذكرني الساعة 11 x", Language::Arabic);
         assert_eq!(
             outcome,
             Outcome::NeedsClarification(ToolCall::CreateReminder {
@@ -610,6 +619,43 @@ mod tests {
                 repeat: None,
             })
         );
+    }
+
+    #[test]
+    fn a_message_that_is_only_a_time_is_not_answered_as_the_current_time() {
+        // The model made up "الساعة الآن 11 صباحًا" for the bare request الساعة 11.
+        let m = model(Ok(ModelReply::Text("الساعة الآن 11 صباحًا".into())));
+        for (user, language, time) in [
+            ("الساعة 11", Language::Arabic, "11"),
+            ("الساعة ١١", Language::Arabic, "11"),
+            ("الساعة 11:30 مساءً", Language::Arabic, "11:30"),
+            ("الساعة 11 صباحًا", Language::Arabic, "11"),
+            ("عند الساعة 3", Language::Arabic, "3"),
+            ("at 11", Language::English, "11"),
+            ("At 3pm, please", Language::English, "3pm"),
+            ("11:15", Language::English, "11:15"),
+            ("3 p.m.", Language::English, "3"),
+        ] {
+            assert_eq!(turn(&m, user, language), (Outcome::TimeOnly(time.into()), 0), "{user}");
+        }
+    }
+
+    #[test]
+    fn time_questions_and_requests_with_a_time_are_not_bare_times() {
+        let m = model(Ok(ModelReply::Text("ok".into())));
+        for (user, language) in [
+            ("What time is it", Language::English),
+            ("كم الساعة", Language::Arabic),
+            ("11", Language::English),
+            ("الساعة 25", Language::Arabic),
+            ("Remind me at 11", Language::English),
+            ("ذكرني الساعة 11", Language::Arabic),
+            ("at 11 and 12", Language::English),
+        ] {
+            assert!(!matches!(turn(&m, user, language).0, Outcome::TimeOnly(_)), "{user}");
+        }
+        assert!(matches!(turn(&m, "What time is it", Language::English).0, Outcome::Time(_)));
+        assert!(matches!(turn(&m, "كم الساعة؟", Language::Arabic).0, Outcome::Time(_)));
     }
 
     #[test]
