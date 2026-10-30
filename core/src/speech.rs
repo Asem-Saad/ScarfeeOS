@@ -691,6 +691,28 @@ mod tests {
         format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
     }
 
+    /// Transcribes, trying again briefly on "text file busy": a script that was
+    /// only just written can still be open for writing in a process that another
+    /// test forked at that moment, and the lock above cannot stop tests in other
+    /// modules from forking.
+    #[cfg(unix)]
+    fn transcribe_retrying(
+        cli: &WhisperCli,
+        wav: &Path,
+        language: SttLanguage,
+    ) -> Result<Transcript, SpeechError> {
+        let mut tries = 0;
+        loop {
+            match cli.transcribe(wav, language) {
+                Err(SpeechError::Io(why)) if why.contains("(os error 26)") && tries < 20 => {
+                    tries += 1;
+                    thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn fake_program_gets_an_argument_list_and_arabic_survives() {
@@ -707,7 +729,7 @@ mod tests {
         let wav = dir.file(odd, b"RIFF");
         let model = dir.file("model with space.bin", b"m");
 
-        let t = WhisperCli::new(&bin, &model).transcribe(&wav, SttLanguage::Arabic).unwrap();
+        let t = transcribe_retrying(&WhisperCli::new(&bin, &model), &wav, SttLanguage::Arabic).unwrap();
         assert_eq!(t.text, "[مجالة]");
         assert_eq!(t.language.as_deref(), Some("ar"));
 
@@ -749,7 +771,7 @@ mod tests {
         let wav = dir.file("a.wav", b"RIFF");
         let model = dir.file("m.bin", b"m");
         let bin = dir.script("echo 'error: failed to initialize whisper context' >&2\necho '{}'\nexit 3");
-        let err = WhisperCli::new(&bin, &model).transcribe(&wav, SttLanguage::Auto).unwrap_err();
+        let err = transcribe_retrying(&WhisperCli::new(&bin, &model), &wav, SttLanguage::Auto).unwrap_err();
         assert_eq!(
             err,
             SpeechError::NonZeroExit { code: Some(3), stderr: "error: failed to initialize whisper context".to_string() }
@@ -764,10 +786,10 @@ mod tests {
         let wav = dir.file("a.wav", b"RIFF");
         let model = dir.file("m.bin", b"m");
         let bin = dir.script("echo '{\"transcription\": oops'");
-        let err = WhisperCli::new(&bin, &model).transcribe(&wav, SttLanguage::Auto).unwrap_err();
+        let err = transcribe_retrying(&WhisperCli::new(&bin, &model), &wav, SttLanguage::Auto).unwrap_err();
         assert!(matches!(err, SpeechError::MalformedOutput(_)), "{err:?}");
         let bin = dir.script("printf '\\377\\376 not utf-8'");
-        let err = WhisperCli::new(&bin, &model).transcribe(&wav, SttLanguage::Auto).unwrap_err();
+        let err = transcribe_retrying(&WhisperCli::new(&bin, &model), &wav, SttLanguage::Auto).unwrap_err();
         assert!(matches!(err, SpeechError::MalformedOutput(_)), "{err:?}");
     }
 
@@ -781,10 +803,12 @@ mod tests {
         let pid_file = dir.0.join("pid");
         let bin = dir.script(&format!("echo $$ > {}\nexec sleep 30", sh_quote(&pid_file)));
         let started = Instant::now();
-        let err = WhisperCli::new(&bin, &model)
-            .with_timeout(Duration::from_millis(300))
-            .transcribe(&wav, SttLanguage::Auto)
-            .unwrap_err();
+        let err = transcribe_retrying(
+            &WhisperCli::new(&bin, &model).with_timeout(Duration::from_millis(300)),
+            &wav,
+            SttLanguage::Auto,
+        )
+        .unwrap_err();
         assert_eq!(err, SpeechError::Timeout(Duration::from_millis(300)));
         assert!(started.elapsed() < Duration::from_secs(10));
         let pid = fs::read_to_string(&pid_file).unwrap();
