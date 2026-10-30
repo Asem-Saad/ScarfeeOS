@@ -12,3 +12,4 @@ pub mod provider;
 pub mod speech;
 pub mod tiers;
 pub mod tools;
+pub mod voice;

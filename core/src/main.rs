@@ -3,6 +3,10 @@ use scarfeeos_core::executor::Executor;
 use scarfeeos_core::guard::LiveData;
 use scarfeeos_core::ipc;
 use scarfeeos_core::lang::Language;
+use scarfeeos_core::speech::{SttLanguage, WhisperCli};
+use scarfeeos_core::voice::{self, CommandRecorder, VoiceTurn};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use scarfeeos_core::provider::{LocalConfig, LocalProvider};
@@ -18,8 +22,9 @@ fn main() {
         None => println!("ScarfeeOS core starting (language: {})", lang.native_name()),
         Some("chat") if args.len() > 1 => chat(&args[1..].join(" "), lang),
         Some("serve") if args.len() == 1 => serve(),
+        Some("voice") if args.len() == 1 => voice_command(lang),
         Some(_) => {
-            eprintln!("usage: scarfeeos-core [chat \"text\" | serve]");
+            eprintln!("usage: scarfeeos-core [chat \"text\" | serve | voice]");
             std::process::exit(2);
         }
     }
@@ -60,6 +65,50 @@ fn chat(text: &str, lang: Language) {
     println!("{}", describe(&outcome));
     if matches!(outcome, Outcome::Error(_)) {
         std::process::exit(1);
+    }
+}
+
+/// One spoken turn: record until Enter is pressed or the time limit passes,
+/// transcribe with whisper.cpp, then ask the assistant. The program and model
+/// paths come from SCARFEEOS_WHISPER_CLI and SCARFEEOS_WHISPER_MODEL.
+fn voice_command(lang: Language) {
+    let path = |var: &str| {
+        std::env::var(var).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| {
+            eprintln!("voice: {var} is not set");
+            std::process::exit(2);
+        })
+    };
+    let transcriber = WhisperCli::new(path("SCARFEEOS_WHISPER_CLI"), path("SCARFEEOS_WHISPER_MODEL"));
+    let (command, writer) = providers().unwrap_or_else(|e| {
+        eprintln!("voice: {e}");
+        std::process::exit(2);
+    });
+    let assistant = assistant_for(&command, &writer);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let on_enter = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        // End of input is not a stop request, so a closed stdin does not cut the recording short.
+        if matches!(std::io::stdin().read_line(&mut String::new()), Ok(n) if n > 0) {
+            on_enter.store(true, Ordering::SeqCst);
+        }
+    });
+    eprintln!("listening: press Enter to stop");
+
+    let recorder = CommandRecorder::default();
+    match voice::voice_turn(&recorder, &transcriber, &assistant, &stop, SttLanguage::Auto, lang) {
+        Ok(VoiceTurn::NothingHeard) => println!("nothing heard"),
+        Ok(VoiceTurn::Heard { transcript, outcome, .. }) => {
+            println!("heard: {}", transcript.text.trim());
+            println!("{}", describe(&outcome));
+            if matches!(outcome, Outcome::Error(_)) {
+                std::process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("voice: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
