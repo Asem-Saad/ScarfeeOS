@@ -40,9 +40,9 @@ class Node {
 const read = (...parts) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-async function loadPanel(chat) {
+async function loadPanel(chat, storage) {
   const ids = {};
-  for (const id of ['conversation-list', 'message-list', 'message-input', 'language', 'composer', 'new-conversation']) ids[id] = new Node(id);
+  for (const id of ['conversation-list', 'message-list', 'message-input', 'language', 'composer', 'new-conversation', 'setting-digits', 'setting-calendar', 'setting-week-start']) ids[id] = new Node(id);
   ids.language.value = 'en';
   const sendButton = new Node('button');
   const posts = [];
@@ -64,6 +64,14 @@ async function loadPanel(chat) {
     assert.strictEqual(options.method, 'POST');
     return chat();
   };
+  if (storage === undefined) {
+    delete global.localStorage;
+  } else if (storage === 'throws') {
+    Object.defineProperty(global, 'localStorage', { configurable: true, get() { throw new Error('SecurityError'); } });
+  } else {
+    Object.defineProperty(global, 'localStorage', { configurable: true, value: storage });
+  }
+  global.ScarfeeSettings = require('./settings.js');
   global.ScarfeeI18n = require('./i18n.js');
   global.ScarfeeRender = require('./render.js');
   delete require.cache[require.resolve('./panel.js')];
@@ -79,7 +87,16 @@ const shown = (ids) => ids['message-list'].textContent.replace(/[⁨⁩]/g, '');
 test.after(() => {
   delete global.document;
   delete global.fetch;
+  delete global.localStorage;
+  delete global.ScarfeeSettings;
 });
+
+function memoryStorage(initial) {
+  const data = new Map(Object.entries(initial || {}));
+  return { data, getItem: (k) => (data.has(k) ? data.get(k) : null), setItem: (k, v) => { data.set(k, String(v)); } };
+}
+
+const change = (control, value) => { control.value = value; control.listeners.change(); };
 
 test('sending shows a waiting state, blocks a second send, then shows the answer', async () => {
   let answer;
@@ -156,4 +173,75 @@ test('an HTTP error from the bridge is shown with its message', async () => {
   await tick();
   await tick();
   assert.match(shown(ids), /Something went wrong: the core stopped \(exit code 3\)/);
+});
+
+const TIME_ANSWER = { status: 200, text: async () => JSON.stringify({ kind: 'time', date: '2026-01-01', hour: 9, minute: 5, weekday: 'Thursday' }) };
+
+test('digits and calendar settings apply at once to answers already shown, and are saved', async () => {
+  const storage = memoryStorage();
+  const { ids } = await loadPanel(async () => TIME_ANSWER, storage);
+  ids['message-input'].value = 'time?';
+  submit(ids);
+  await tick();
+  await tick();
+  assert.match(shown(ids), /09:05, on Thursday 2026-01-01\./);
+
+  change(ids['setting-digits'], 'eastern');
+  assert.match(shown(ids), /٠٩:٠٥, on Thursday ٢٠٢٦-٠١-٠١\./);
+  assert.match(shown(ids), /time\?/, 'the user message is not changed');
+
+  change(ids['setting-calendar'], 'both');
+  assert.match(shown(ids), /٢٠٢٦-٠١-٠١ \(about ١٢ Rajab ١٤٤٧ AH\)/);
+
+  change(ids['setting-digits'], 'western');
+  assert.match(shown(ids), /2026-01-01 \(about 12 Rajab 1447 AH\)/);
+
+  change(ids['setting-week-start'], 'monday');
+  assert.deepStrictEqual(JSON.parse(storage.data.get('scarfeeos.panel.settings')),
+    { language: 'en', digits: 'western', calendar: 'both', weekStart: 'monday' });
+});
+
+test('Arabic starts with Western digits, and the saved settings are used on the next start', async () => {
+  const { ids } = await loadPanel(async () => TIME_ANSWER, memoryStorage());
+  assert.strictEqual(ids['setting-digits'].value, 'western');
+  change(ids.language, 'ar');
+  ids['message-input'].value = 'x';
+  submit(ids);
+  await tick();
+  await tick();
+  assert.match(shown(ids), /09:05/);
+  assert.doesNotMatch(shown(ids), /[٠-٩]/);
+
+  const saved = memoryStorage({ 'scarfeeos.panel.settings': JSON.stringify({ language: 'ar', digits: 'eastern', calendar: 'both', weekStart: 'saturday' }) });
+  const again = await loadPanel(async () => TIME_ANSWER, saved);
+  assert.strictEqual(again.ids.language.value, 'ar');
+  assert.strictEqual(again.ids['setting-digits'].value, 'eastern');
+  assert.strictEqual(again.ids['setting-calendar'].value, 'both');
+  assert.strictEqual(again.ids['setting-week-start'].value, 'saturday');
+  assert.strictEqual(global.document.documentElement.dir, 'rtl');
+});
+
+test('settings still work when storage is missing, blocked or throws on write', async () => {
+  for (const storage of [undefined, 'throws', { getItem() { throw new Error('x'); }, setItem() { throw new Error('quota'); } }]) {
+    const { ids } = await loadPanel(async () => TIME_ANSWER, storage);
+    ids['message-input'].value = 'x';
+    submit(ids);
+    await tick();
+    await tick();
+    change(ids['setting-digits'], 'eastern');
+    assert.match(shown(ids), /٠٩:٠٥/);
+  }
+});
+
+test('model text, URLs and file names keep their digits in either setting', async () => {
+  const reply = { kind: 'reply', text: 'Open https://example.com/a1/b2 and report-2024.pdf at 10:30' };
+  const { ids } = await loadPanel(async () => ({ status: 200, text: async () => JSON.stringify(reply) }), memoryStorage());
+  ids['message-input'].value = 'file 123';
+  submit(ids);
+  await tick();
+  await tick();
+  change(ids['setting-digits'], 'eastern');
+  assert.ok(shown(ids).includes(reply.text));
+  assert.ok(shown(ids).includes('file 123'));
+  assert.doesNotMatch(shown(ids), /[٠-٩]/);
 });

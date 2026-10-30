@@ -14,17 +14,43 @@
         <button type="button" id="new-conversation" class="button" data-i18n="assistant-new-conversation"></button>
       </div>
       <ul id="conversation-list" class="conversation-list" data-i18n-aria-label="assistant-conversations"></ul>
-    </aside>
-    <main class="chat">
-      <header class="chat-header">
-        <h1 class="chat-title" data-i18n="assistant-title"></h1>
-        <label class="language">
+      <section class="settings">
+        <h2 class="sidebar-title" data-i18n="settings-title"></h2>
+        <label class="setting">
           <span data-i18n="assistant-language-label"></span>
           <select id="language">
             <option value="en" data-i18n="language-english"></option>
             <option value="ar" data-i18n="language-arabic"></option>
           </select>
         </label>
+        <label class="setting">
+          <span data-i18n="settings-digits-label"></span>
+          <select id="setting-digits">
+            <option value="western" data-i18n="settings-digits-western"></option>
+            <option value="eastern" data-i18n="settings-digits-eastern"></option>
+          </select>
+        </label>
+        <label class="setting">
+          <span data-i18n="settings-calendar-label"></span>
+          <select id="setting-calendar">
+            <option value="gregorian" data-i18n="settings-calendar-gregorian"></option>
+            <option value="both" data-i18n="settings-calendar-both"></option>
+          </select>
+        </label>
+        <p class="setting-note" data-i18n="settings-hijri-note"></p>
+        <label class="setting">
+          <span data-i18n="settings-week-start-label"></span>
+          <select id="setting-week-start">
+            <option value="saturday" data-i18n="assistant-weekday-saturday"></option>
+            <option value="sunday" data-i18n="assistant-weekday-sunday"></option>
+            <option value="monday" data-i18n="assistant-weekday-monday"></option>
+          </select>
+        </label>
+      </section>
+    </aside>
+    <main class="chat">
+      <header class="chat-header">
+        <h1 class="chat-title" data-i18n="assistant-title"></h1>
       </header>
       <ol id="message-list" class="message-list" data-i18n-aria-label="assistant-messages-label" aria-live="polite"></ol>
       <form id="composer" class="composer">
@@ -36,6 +62,7 @@
     </main>
   </div>
   <script src="i18n.js"></script>
+  <script src="settings.js"></script>
   <script src="render.js"></script>
   <script src="panel.js"></script>
 </body>

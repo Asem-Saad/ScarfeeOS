@@ -2,10 +2,13 @@
 // No DOM here. Every block is plain text: the panel must show it with textContent, never as HTML.
 'use strict';
 
+const Settings = typeof require === 'function' ? require('./settings.js') : globalThis.ScarfeeSettings;
+
 const FSI = '\u2068';
 const PDI = '\u2069';
 const PLACEHOLDER = /\{\s*\$([A-Za-z][A-Za-z0-9_-]*)\s*\}/g;
 const ISO_TIME = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2})?$/;
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 // Fills `{ $name }` the way Fluent does. Each value is isolated so Arabic text, names and numbers
 // cannot reorder the words around them.
@@ -16,14 +19,62 @@ function fill(template, values) {
   });
 }
 
-function formatElapsed(seconds) {
-  const total = Math.max(0, Math.floor(Number(seconds) || 0));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+// Digits and calendar come from the user's settings. Only numbers made here are shaped: model text, names,
+// paths and URLs reach the screen through fill() untouched.
+function digitsOf(settings) {
+  return settings && settings.digits === 'eastern' ? 'eastern' : 'western';
 }
 
-function formatTime(iso) {
+function shapeNumber(value, settings) {
+  return typeof value === 'number' ? Settings.shapeDigits(value, digitsOf(settings)) : value;
+}
+
+function formatElapsed(seconds, settings) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  return Settings.shapeDigits(`${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`, digitsOf(settings));
+}
+
+function hijriMonthName(month, t) {
+  switch (month) {
+    case 1: return t('hijri-month-muharram');
+    case 2: return t('hijri-month-safar');
+    case 3: return t('hijri-month-rabi-al-awwal');
+    case 4: return t('hijri-month-rabi-al-thani');
+    case 5: return t('hijri-month-jumada-al-awwal');
+    case 6: return t('hijri-month-jumada-al-thani');
+    case 7: return t('hijri-month-rajab');
+    case 8: return t('hijri-month-shaban');
+    case 9: return t('hijri-month-ramadan');
+    case 10: return t('hijri-month-shawwal');
+    case 11: return t('hijri-month-dhu-al-qidah');
+    default: return t('hijri-month-dhu-al-hijjah');
+  }
+}
+
+// A Gregorian ISO date (YYYY-MM-DD), with the approximate Hijri date after it when the user asked for both.
+// Anything that is not a real date is returned as it came.
+function formatDate(iso, settings, t) {
+  const match = ISO_DATE.exec(String(iso));
+  if (!match || !Settings.isGregorianDate(Number(match[1]), Number(match[2]), Number(match[3]))) {
+    return String(iso);
+  }
+  const digits = digitsOf(settings);
+  const gregorian = Settings.shapeDigits(match[0], digits);
+  if (!settings || settings.calendar !== 'both' || typeof t !== 'function') {
+    return gregorian;
+  }
+  const hijri = Settings.toHijriApprox(Number(match[1]), Number(match[2]), Number(match[3]));
+  return fill(t('settings-date-both'), {
+    gregorian,
+    day: Settings.shapeDigits(hijri.day, digits),
+    month: hijriMonthName(hijri.month, t),
+    year: Settings.shapeDigits(hijri.year, digits),
+  });
+}
+
+function formatTime(iso, settings, t) {
   const match = ISO_TIME.exec(String(iso));
-  return match ? `${match[1]} ${match[2]}` : String(iso);
+  return match ? `${formatDate(match[1], settings, t)} ${Settings.shapeDigits(match[2], digitsOf(settings))}` : String(iso);
 }
 
 function joinList(items, t) {
@@ -60,7 +111,7 @@ function repeatName(repeat, t) {
 }
 
 // What a tool call would do, as a phrase that fits after "I understood this request as: ".
-function describeTool(tool, args, t) {
+function describeTool(tool, args, t, settings) {
   const a = args && typeof args === 'object' ? args : {};
   let action;
   switch (tool) {
@@ -74,10 +125,10 @@ function describeTool(tool, args, t) {
       action = fill(t('assistant-tool-search-files'), { query: a.query });
       break;
     case 'create_reminder':
-      action = fill(t('assistant-tool-create-reminder'), { text: a.text, time: formatTime(a.time) });
+      action = fill(t('assistant-tool-create-reminder'), { text: a.text, time: formatTime(a.time, settings, t) });
       break;
     case 'schedule_meeting':
-      action = fill(t('assistant-tool-schedule-meeting'), { title: a.title, time: formatTime(a.time) });
+      action = fill(t('assistant-tool-schedule-meeting'), { title: a.title, time: formatTime(a.time, settings, t) });
       if (Array.isArray(a.attendees) && a.attendees.length > 0) {
         action = fill(t('assistant-tool-with-attendees'), { action, attendees: joinList(a.attendees, t) });
       }
@@ -95,10 +146,10 @@ function describeTool(tool, args, t) {
   return repeat ? fill(t('assistant-tool-with-repeat'), { action, repeat }) : action;
 }
 
-function describeResponse(response, t, lang) {
+function describeResponse(response, t, lang, settings) {
   const r = response && typeof response === 'object' ? response : {};
   const block = (tone, text) => ({ tone, text });
-  const action = () => describeTool(r.tool, r.arguments, t);
+  const action = () => describeTool(r.tool, r.arguments, t, settings);
   switch (r.kind) {
     case 'reply': {
       const blocks = [block('reply', String(r.text === undefined || r.text === null ? '' : r.text))];
@@ -110,9 +161,9 @@ function describeResponse(response, t, lang) {
     }
     case 'time':
       return [block('info', fill(t('assistant-time'), {
-        time: `${String(r.hour).padStart(2, '0')}:${String(r.minute).padStart(2, '0')}`,
+        time: Settings.shapeDigits(`${String(r.hour).padStart(2, '0')}:${String(r.minute).padStart(2, '0')}`, digitsOf(settings)),
         weekday: weekdayName(r.weekday, t),
-        date: r.date,
+        date: formatDate(r.date, settings, t),
       }))];
     case 'unsupported_time_zone':
       return [block('info', fill(t('assistant-unsupported-time-zone'), { zone: r.zone }))];
@@ -129,10 +180,10 @@ function describeResponse(response, t, lang) {
     case 'hijri_approx': {
       const month = lang === 'ar' ? r.month_name_ar : r.month_name_en;
       const blocks = [block('info', fill(t('assistant-hijri'), {
-        gregorian: r.gregorian,
-        day: r.day,
+        gregorian: formatDate(r.gregorian, { digits: digitsOf(settings) }),
+        day: shapeNumber(r.day, settings),
         month: month === undefined ? '' : month,
-        year: r.year,
+        year: shapeNumber(r.year, settings),
       }))];
       // Only an exact date may go without the note, and the core says so explicitly.
       if (r.approximate !== false) {
@@ -187,7 +238,7 @@ function responseFromHttp(status, bodyText) {
   return { kind: 'error', message: `HTTP ${status}` };
 }
 
-const renderApi = { fill, formatElapsed, formatTime, describeTool, describeResponse, responseFromHttp };
+const renderApi = { fill, formatElapsed, formatDate, formatTime, describeTool, describeResponse, responseFromHttp };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = renderApi;

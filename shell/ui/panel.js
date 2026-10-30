@@ -45,6 +45,16 @@
     const messageList = document.getElementById('message-list');
     const input = document.getElementById('message-input');
     const languageSelect = document.getElementById('language');
+    const settingControls = [
+      ['language', languageSelect],
+      ['digits', document.getElementById('setting-digits')],
+      ['calendar', document.getElementById('setting-calendar')],
+      ['weekStart', document.getElementById('setting-week-start')],
+    ];
+    const settings = ScarfeeSettings.createStore(ScarfeeSettings.browserStorage);
+    for (const [key, control] of settingControls) {
+      control.value = settings.get()[key];
+    }
     const sendButton = document.querySelector('#composer button[type="submit"]');
     const { describeResponse, fill, formatElapsed, responseFromHttp } = ScarfeeRender;
 
@@ -114,7 +124,7 @@
     function updateElapsed(message) {
       if (elapsedNode) {
         elapsedNode.textContent = fill(t('assistant-waiting-elapsed'), {
-          time: formatElapsed(waitingSeconds(message)),
+          time: formatElapsed(waitingSeconds(message), settings.get()),
         });
       }
     }
@@ -152,7 +162,7 @@
         if (message.role === 'user') {
           messageList.append(renderMessage(true, [{ tone: 'reply', text: message.text }]));
         } else if (message.response) {
-          messageList.append(renderMessage(false, describeResponse(message.response, t, i18n.getLanguage())));
+          messageList.append(renderMessage(false, describeResponse(message.response, t, i18n.getLanguage(), settings.get())));
         } else {
           messageList.append(renderMessage(false, [{ tone: 'waiting', text: t('assistant-waiting') }], message));
         }
@@ -206,6 +216,17 @@
       }
     }
 
+    // A setting applies at once: messages are drawn again from the stored responses with the new choice.
+    function changeSetting(key, control) {
+      if (settings.set(key, control.value)) {
+        if (key === 'language') {
+          setLanguage(control.value);
+        } else {
+          render();
+        }
+      }
+    }
+
     document.getElementById('composer').addEventListener('submit', (event) => {
       event.preventDefault();
       send();
@@ -217,7 +238,9 @@
       }
     });
     document.getElementById('new-conversation').addEventListener('click', newConversation);
-    languageSelect.addEventListener('change', () => setLanguage(languageSelect.value));
+    for (const [key, control] of settingControls) {
+      control.addEventListener('change', () => changeSetting(key, control));
+    }
 
     const loads = Object.keys(catalogs).map((lang) =>
       fetch(`../../locales/${lang}/scarfeeos.ftl`)
