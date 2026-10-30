@@ -96,11 +96,18 @@ fn response(id: Value, outcome: &Outcome) -> Value {
         Outcome::NeedsConfirmation(call) => tool_body("needs_confirmation", call),
         Outcome::MissingTime(call) => tool_body("missing_time", call),
         Outcome::Error(message) => json!({"kind": "error", "message": message}),
-        // Outcome gains variants from other work. Until this match learns them,
-        // they reach the panel as kind "other" with their Debug text. The allow
-        // is for while every variant is covered above.
-        #[allow(unreachable_patterns)]
-        other => json!({"kind": "other", "debug": format!("{other:?}")}),
+        Outcome::Declined => json!({"kind": "declined"}),
+        Outcome::HijriApprox { gregorian, hijri } => json!({
+            "kind": "hijri_approx",
+            "gregorian": format!("{:04}-{:02}-{:02}", gregorian.year, gregorian.month, gregorian.day),
+            "year": hijri.year,
+            "month": hijri.month,
+            "day": hijri.day,
+            "month_name_en": hijri.month_name_en(),
+            "month_name_ar": hijri.month_name_ar(),
+            "approximate": true,
+        }),
+        Outcome::MissingDate => json!({"kind": "missing_date"}),
     };
     body["id"] = id;
     body
@@ -254,6 +261,46 @@ mod tests {
                 "text": "call the bank", "time": "", "repeat": null,
             }})
         );
+    }
+
+    #[test]
+    fn declined_has_no_extra_fields() {
+        let m = model(Ok(ModelReply::Text("The five pillars are ...".into())));
+        assert_eq!(ask(&m, &req("What are the five pillars of Islam?")), json!({"id": 7, "kind": "declined"}));
+        assert_eq!(
+            ask(&m, &json!({"id": 8, "text": "ما هي أركان الإسلام الخمسة؟", "language": "ar"})),
+            json!({"id": 8, "kind": "declined"})
+        );
+    }
+
+    #[test]
+    fn hijri_approx_has_both_month_names_and_is_marked_approximate() {
+        let m = model(Err("must not be called".into()));
+        assert_eq!(
+            ask(&m, &req("What is the Hijri date for 1 January 2026?")),
+            json!({
+                "id": 7, "kind": "hijri_approx", "gregorian": "2026-01-01",
+                "year": 1447, "month": 7, "day": 12,
+                "month_name_en": "Rajab", "month_name_ar": "رجب", "approximate": true,
+            })
+        );
+        let r = ask(&m, &json!({"id": 8, "text": "حول 11 مارس 2024 إلى التاريخ الهجري", "language": "ar"}));
+        assert_eq!(
+            r,
+            json!({
+                "id": 8, "kind": "hijri_approx", "gregorian": "2024-03-11",
+                "year": 1445, "month": 9, "day": 1,
+                "month_name_en": "Ramadan", "month_name_ar": "رمضان", "approximate": true,
+            })
+        );
+        let r = ask(&m, &req("Hijri date for 2024-06-30"));
+        assert_eq!((&r["month_name_en"], &r["month_name_ar"]), (&json!("Dhu al-Hijjah"), &json!("ذو الحجة")), "{r}");
+    }
+
+    #[test]
+    fn missing_date_has_no_extra_fields() {
+        let m = model(Err("must not be called".into()));
+        assert_eq!(ask(&m, &req("What is the Hijri date?")), json!({"id": 7, "kind": "missing_date"}));
     }
 
     #[test]
