@@ -1,0 +1,5 @@
+# Assembled by build.rs from ../ui and ../../locales.
+/dist/
+# Written by tauri-build.
+/gen/
+/target/
