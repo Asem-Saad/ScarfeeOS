@@ -38,3 +38,7 @@ See [ROADMAP.md](ROADMAP.md).
 ## Legal
 
 The project follows a strict IP and licensing policy: [docs/ip-and-licensing.md](docs/ip-and-licensing.md).
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE). Contributions require DCO sign-off (`git commit -s`).

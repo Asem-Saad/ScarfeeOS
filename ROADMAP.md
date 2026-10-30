@@ -2,7 +2,8 @@
 
 ## Phase 0: Foundations
 - [x] Repo structure and design docs
-- [ ] Choose license and complete legal review (see docs/ip-and-licensing.md)
+- [x] Project license: Apache-2.0
+- [ ] Complete legal review (see docs/ip-and-licensing.md)
 - [ ] Benchmark candidate local models (only commercially permissive licenses, e.g. Apache-2.0 Qwen; see docs/ip-and-licensing.md) on Arabic and English tasks
 
 ## Phase 1: AI core (runs on any Linux machine)
@@ -20,8 +21,8 @@
 ## Phase 3: Productivity suite
 - [ ] Documents, spreadsheets, presentations (RTL, Arabic numerals)
 - [ ] Email and calendar client
-- [ ] Media player (libVLC/mpv)
-- [ ] Browser (Chromium/Gecko based)
+- [ ] Media player (royalty-free codecs bundled; patent-licensed codecs via user add-on)
+- [ ] Browser (WebView first, no proprietary codecs; full Gecko/Chromium build later)
 
 ## Phase 4: Bootable image
 - [ ] Fedora-based image build

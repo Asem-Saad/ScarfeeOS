@@ -21,4 +21,4 @@ A custom Fedora spin (built with kiwi or lorax). Fedora provides the kernel, dri
 - **Speech:** whisper.cpp for STT, a TTS engine with Arabic voices, an Arabic-aware wake word. All offline.
 
 ## Apps
-Reuse mature engines where possible (LibreOffice for office formats, libVLC/mpv for media, Chromium or Gecko for the browser). Meetings and scheduling are original, built on CalDAV/ICS.
+Reuse mature engines where possible (LibreOffice for office formats, mpv or libmpv as a separate program for media, a WebView first and later Gecko or Chromium (without proprietary codecs) for the browser). Meetings and scheduling are original, built on CalDAV/ICS.
