@@ -178,7 +178,9 @@ fn requested_place(user_text: &str) -> Option<String> {
     (!PLACE_LOCAL.contains(&first.as_str())).then(|| place.join(" "))
 }
 
-/// The tools offered to the model, in the OpenAI `tools` format.
+/// The tools offered to the model, in the OpenAI `tools` format. `current_time`
+/// is left out: code answers time questions first, and when it was offered,
+/// models called it before reminders and stopped there.
 pub fn tool_schema() -> Value {
     tool_schema_for(true)
 }
@@ -218,12 +220,6 @@ fn tool_schema_for(set_language: bool) -> Value {
             "Change the system language.",
             json!({"lang": {"type": "string", "enum": ["en", "ar"]}}),
             &["lang"],
-        ),
-        tool(
-            "current_time",
-            "Get the current local time.",
-            json!({"timezone": text("Time zone, or local")}),
-            &[],
         ),
     ]);
     if !set_language {
@@ -695,7 +691,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["open_app", "list_files", "search_files", "create_reminder", "schedule_meeting", "set_language", "current_time"]
+            ["open_app", "list_files", "search_files", "create_reminder", "schedule_meeting", "set_language"]
         );
     }
 
