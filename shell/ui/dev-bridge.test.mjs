@@ -330,6 +330,48 @@ test('shell/installer/ is served at /installer/, and a missing folder is a 404',
   });
 });
 
+test('every script and stylesheet a served page names is served, with the right type', async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const installerDir = path.join(here, '..', 'installer');
+  const pages = [
+    ...fs.readdirSync(here).filter((f) => f.endsWith('.html')).map((f) => (f === 'index.html' ? '/' : `/${f}`)),
+    ...fs.readdirSync(installerDir).filter((f) => f.endsWith('.html')).map((f) => (f === 'index.html' ? '/installer/' : `/installer/${f}`)),
+  ];
+  assert.ok(pages.includes('/') && pages.includes('/installer/'), pages.join(' '));
+  const types = { '.js': /^text\/javascript/, '.css': /^text\/css/ };
+  await withBridge({}, async (base) => {
+    for (const page of pages) {
+      const html = await (await fetch(`${base}${page}`)).text();
+      const urls = [
+        ...[...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map((m) => m[1]),
+        ...[...html.matchAll(/<link\b[^>]*\brel="stylesheet"[^>]*\bhref="([^"]+)"/g)].map((m) => m[1]),
+      ];
+      assert.ok(urls.length > 0, `${page} names no script or stylesheet`);
+      for (const url of urls) {
+        const res = await fetch(new URL(url, `${base}${page}`));
+        assert.strictEqual(res.status, 200, `${page} names ${url}`);
+        const type = types[path.extname(url)];
+        assert.ok(type, `${page} names ${url}, which this test has no type for`);
+        assert.match(res.headers.get('content-type'), type, `${page} names ${url}`);
+        await res.arrayBuffer();
+      }
+    }
+  });
+});
+
+test('the locale files installer.js fetches are served from /installer/', async () => {
+  const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'installer', 'installer.js'), 'utf8');
+  const [, template] = source.match(/fetch\(`([^`]*scarfeeos\.ftl)`\)/);
+  await withBridge({}, async (base) => {
+    for (const lang of ['en', 'ar']) {
+      const res = await fetch(new URL(template.replace('${lang}', lang), `${base}/installer/`));
+      assert.strictEqual(res.status, 200, lang);
+      assert.match(res.headers.get('content-type'), /^text\/plain/);
+      assert.match(await res.text(), /=/);
+    }
+  });
+});
+
 test('--port is read, checked, and used by the program', async () => {
   assert.deepStrictEqual(parseArgs(['--core', 'c'], {}), { corePath: 'c', port: 8770 });
   assert.deepStrictEqual(parseArgs(['--core', 'c', '--port', '8771'], {}), { corePath: 'c', port: 8771 });

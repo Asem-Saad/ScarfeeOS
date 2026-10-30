@@ -3,9 +3,9 @@
 //
 //   node shell/dev-bridge.mjs --core path/to/scarfeeos-core [--port 8770]     (or set SCARFEEOS_CORE)
 //
-// Then open http://127.0.0.1:8770/ (the panel), /calendar.html or /installer/ (shell/installer/). The bridge
-// forwards text, confirm, cancel, upcoming, delete_event and hardware requests to the core. Standard library
-// only. Not for production use.
+// Then open http://127.0.0.1:8770/ (the panel), /calendar.html or /installer/ (shell/installer/, which loads
+// ../ui/i18n.js, so shell/ui/ is also served at /ui/). The bridge forwards text, confirm, cancel, upcoming,
+// delete_event and hardware requests to the core. Standard library only. Not for production use.
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -295,7 +295,9 @@ export function createBridge({
       ? [localesDir, pathname.slice('/locales'.length)]
       : under('/installer')
         ? [installerDir, pathname.slice('/installer'.length)]
-        : [uiDir, pathname];
+        : under('/ui')
+          ? [uiDir, pathname.slice('/ui'.length)]
+          : [uiDir, pathname];
     const file = await resolveInside(root, rest);
     if (!file) {
       throw new BridgeError('not found', 404);
