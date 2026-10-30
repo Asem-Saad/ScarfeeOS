@@ -153,6 +153,9 @@ impl LocalProvider {
         if let Some(model) = &self.config.model {
             body["model"] = model.clone().into();
         }
+        // Thinking made replies several times slower and worse in our eval.
+        body["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
+        body["temperature"] = 0.into();
         let mut resp = self
             .agent
             .post(&self.endpoint)
