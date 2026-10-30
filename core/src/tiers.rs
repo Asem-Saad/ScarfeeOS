@@ -2,12 +2,16 @@
 //! and the user may override any recommendation.
 //! Memory figures were measured on an RTX 3050 with 6 GB, llama.cpp, Q4_K_M files.
 
-use crate::hardware::Tier;
+use crate::hardware::{Tier, SMALL_GPU_MEMORY_TOLERANCE_MIB};
 
 /// Smallest GPU memory, in MiB, for which Dual uses Qwen3-8B with Jais:
-/// 12 GB (the pair needs about 9.8 GB measured, plus headroom).
+/// 12 GB minus the small tolerance (the pair needs about 9.8 GB measured, plus headroom).
 /// Below it, Dual uses Qwen3-4B with Jais (about 7.7 GB measured).
-pub const DUAL_LARGE_MIN_GPU_MEMORY_MIB: u64 = 12 * 1024;
+pub const DUAL_LARGE_MIN_GPU_MEMORY_MIB: u64 = 12 * 1024 - SMALL_GPU_MEMORY_TOLERANCE_MIB;
+
+/// Smallest GPU memory, in MiB, for which the Lite model is planned fully on the GPU:
+/// 4 GB minus the small tolerance (Qwen3-4B measured 3.7 GB). Below it, 0 layers.
+pub const LITE_GPU_MIN_MEMORY_MIB: u64 = 4 * 1024 - SMALL_GPU_MEMORY_TOLERANCE_MIB;
 
 /// llama-server `--n-gpu-layers` value that offloads every layer to the GPU.
 pub const ALL_GPU_LAYERS: u32 = 999;
@@ -68,11 +72,15 @@ pub const JAIS_3_3_7B: ModelSpec = ModelSpec {
 pub const LITE_MODEL: ModelSpec = ModelSpec { measured: false, ..QWEN3_4B };
 
 /// Plans the models for `tier`. `gpu_memory_mib` is None when there is no GPU.
-/// Only Dual looks at it, to pick the pair. A tier that does not fit the
+/// Lite uses it to decide between the GPU and the CPU, and Dual to pick the pair. A tier that does not fit the
 /// hardware still gets its plan.
 pub fn plan_for(tier: Tier, gpu_memory_mib: Option<u64>) -> ModelPlan {
     match tier {
-        Tier::Lite => ModelPlan { tier, command: LITE_MODEL, writer: None, gpu_layers: 0 },
+        Tier::Lite => {
+            let on_gpu = gpu_memory_mib.is_some_and(|m| m >= LITE_GPU_MIN_MEMORY_MIB);
+            let gpu_layers = if on_gpu { ALL_GPU_LAYERS } else { 0 };
+            ModelPlan { tier, command: LITE_MODEL, writer: None, gpu_layers }
+        }
         Tier::Full => {
             ModelPlan { tier, command: QWEN3_8B, writer: None, gpu_layers: ALL_GPU_LAYERS }
         }
@@ -87,7 +95,7 @@ pub fn plan_for(tier: Tier, gpu_memory_mib: Option<u64>) -> ModelPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hardware::{recommend_tier, Gpu, Hardware};
+    use crate::hardware::{recommend_tier, Gpu, Hardware, FULL_MIN_GPU_MEMORY_MIB};
 
     const GB: u64 = 1024;
 
@@ -99,10 +107,20 @@ mod tests {
     }
 
     fn assert_plan(plan: ModelPlan, tier: Tier, command: ModelSpec, writer: Option<ModelSpec>) {
+        let gpu_layers = if tier == Tier::Lite { 0 } else { ALL_GPU_LAYERS };
+        assert_plan_layers(plan, tier, command, writer, gpu_layers);
+    }
+
+    fn assert_plan_layers(
+        plan: ModelPlan,
+        tier: Tier,
+        command: ModelSpec,
+        writer: Option<ModelSpec>,
+        gpu_layers: u32,
+    ) {
         assert_eq!(plan.tier, tier);
         assert_eq!(plan.command, command);
         assert_eq!(plan.writer, writer);
-        let gpu_layers = if tier == Tier::Lite { 0 } else { ALL_GPU_LAYERS };
         assert_eq!(plan.gpu_layers, gpu_layers);
     }
 
@@ -112,14 +130,29 @@ mod tests {
     }
 
     #[test]
-    fn four_gb_is_lite() {
-        assert_plan(plan_for_gpu(Some(4 * GB)), Tier::Lite, LITE_MODEL, None);
+    fn four_gb_is_lite_with_all_layers_on_the_gpu() {
+        assert_plan_layers(plan_for_gpu(Some(4 * GB)), Tier::Lite, LITE_MODEL, None, ALL_GPU_LAYERS);
+        assert_plan_layers(plan_for_gpu(Some(4032)), Tier::Lite, LITE_MODEL, None, ALL_GPU_LAYERS);
+    }
+
+    #[test]
+    fn below_four_gb_is_lite_on_the_cpu() {
+        let mib = (3.9 * GB as f64) as u64;
+        assert_plan_layers(plan_for_gpu(Some(mib)), Tier::Lite, LITE_MODEL, None, 0);
+        assert_plan_layers(plan_for_gpu(Some(4031)), Tier::Lite, LITE_MODEL, None, 0);
+        assert_plan_layers(plan_for_gpu(Some(2 * GB)), Tier::Lite, LITE_MODEL, None, 0);
+    }
+
+    #[test]
+    fn lite_just_below_full_keeps_all_layers_on_the_gpu() {
+        let below_full = FULL_MIN_GPU_MEMORY_MIB - 1;
+        assert_plan_layers(plan_for_gpu(Some(below_full)), Tier::Lite, LITE_MODEL, None, ALL_GPU_LAYERS);
     }
 
     #[test]
     fn just_below_the_tolerance_is_lite() {
         // 5900 MiB is under the Qwen3-8B measurement (5939 MiB) and under the threshold.
-        assert_plan(plan_for_gpu(Some(5900)), Tier::Lite, LITE_MODEL, None);
+        assert_plan_layers(plan_for_gpu(Some(5900)), Tier::Lite, LITE_MODEL, None, ALL_GPU_LAYERS);
     }
 
     #[test]
@@ -135,9 +168,16 @@ mod tests {
     #[test]
     fn just_below_12_gb_is_dual_with_small_command_model() {
         let mib = (11.9 * GB as f64) as u64;
-        assert!(mib < 12 * GB);
+        assert!(mib < DUAL_LARGE_MIN_GPU_MEMORY_MIB);
         assert_plan(plan_for_gpu(Some(mib)), Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
-        assert_plan(plan_for_gpu(Some(12 * GB - 1)), Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
+        assert_plan(plan_for_gpu(Some(12223)), Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
+    }
+
+    #[test]
+    fn card_reporting_12224_mib_is_dual_with_large_command_model() {
+        assert_eq!(DUAL_LARGE_MIN_GPU_MEMORY_MIB, 12224);
+        assert_plan(plan_for_gpu(Some(12224)), Tier::Dual, QWEN3_8B, Some(JAIS_3_3_7B));
+        assert_plan(plan_for_gpu(Some(12 * GB - 1)), Tier::Dual, QWEN3_8B, Some(JAIS_3_3_7B));
     }
 
     #[test]
@@ -151,9 +191,9 @@ mod tests {
     }
 
     #[test]
-    fn card_reporting_slightly_under_8_gb_is_not_dual() {
-        // RTX 4060 8 GB cards report 8188 MiB; the Dual threshold is exact.
-        assert_eq!(plan_for_gpu(Some(8188)).tier, Tier::Full);
+    fn card_reporting_8188_mib_is_dual_with_small_command_model() {
+        // RTX 4060 8 GB cards report 8188 MiB.
+        assert_plan(plan_for_gpu(Some(8188)), Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
     }
 
     #[test]
@@ -161,7 +201,7 @@ mod tests {
         assert_plan(plan_for(Tier::Full, None), Tier::Full, QWEN3_8B, None);
         assert_plan(plan_for(Tier::Dual, None), Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
         assert_plan(plan_for(Tier::Dual, Some(2 * GB)), Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
-        assert_plan(plan_for(Tier::Lite, Some(24 * GB)), Tier::Lite, LITE_MODEL, None);
+        assert_plan_layers(plan_for(Tier::Lite, Some(24 * GB)), Tier::Lite, LITE_MODEL, None, ALL_GPU_LAYERS);
     }
 
     #[test]

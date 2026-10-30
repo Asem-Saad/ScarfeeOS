@@ -138,14 +138,18 @@ impl LocalProvider {
         user: &str,
         tools: &serde_json::Value,
     ) -> Result<ModelReply, String> {
-        let json = self.post(serde_json::json!({
+        let mut body = serde_json::json!({
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "tools": tools,
             "stream": false,
-        }))?;
+        });
+        // Some servers reject an empty `tools` array.
+        if tools.as_array().is_none_or(|t| !t.is_empty()) {
+            body["tools"] = tools.clone();
+        }
+        let json = self.post(body)?;
         parse_reply(&json)
     }
 
@@ -407,8 +411,11 @@ mod tests {
     fn local_text_reply_with_tools() {
         let (url, server) = serve_once("200 OK", r#"{"choices":[{"message":{"content":"مرحبا","tool_calls":[]}}]}"#);
         let reply = local(url, None).complete_with_tools("s", "u", &serde_json::json!([])).unwrap();
-        server.join().unwrap();
+        let raw = server.join().unwrap();
         assert_eq!(reply, ModelReply::Text("مرحبا".into()));
+        let sent: serde_json::Value = serde_json::from_str(raw.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert!(sent.get("tools").is_none(), "empty tools list must be omitted: {sent}");
+        assert_eq!(sent["messages"][1]["content"], "u");
     }
 
     #[test]

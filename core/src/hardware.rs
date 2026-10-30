@@ -10,8 +10,12 @@ const GPU_MEMORY_TOLERANCE_MIB: u64 = 128;
 /// Smallest GPU memory, in MiB, for which the Full tier is recommended:
 /// 6 GB minus the tolerance.
 pub const FULL_MIN_GPU_MEMORY_MIB: u64 = 6 * 1024 - GPU_MEMORY_TOLERANCE_MIB;
-/// Smallest GPU memory, in MiB, for which the Dual tier is recommended (two models loaded).
-pub const DUAL_MIN_GPU_MEMORY_MIB: u64 = 8 * 1024;
+/// Tolerance for the 8 GB and 12 GB boundaries. Smaller than the one above so that
+/// a card with 11.9 GB (12186 MiB) still counts as below 12 GB.
+pub const SMALL_GPU_MEMORY_TOLERANCE_MIB: u64 = 64;
+/// Smallest GPU memory, in MiB, for which the Dual tier is recommended (two models loaded):
+/// 8 GB minus the small tolerance. An RTX 4060 8 GB reports 8188 MiB.
+pub const DUAL_MIN_GPU_MEMORY_MIB: u64 = 8 * 1024 - SMALL_GPU_MEMORY_TOLERANCE_MIB;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -255,6 +259,14 @@ mod tests {
         assert_eq!(tier_at(FULL_MIN_GPU_MEMORY_MIB - 1), Tier::Lite);
         assert_eq!(tier_at(DUAL_MIN_GPU_MEMORY_MIB), Tier::Dual);
         assert_eq!(tier_at(DUAL_MIN_GPU_MEMORY_MIB - 1), Tier::Full);
+    }
+
+    #[test]
+    fn card_reporting_8188_mib_gets_dual() {
+        assert_eq!(DUAL_MIN_GPU_MEMORY_MIB, 8128);
+        let rec = recommend_tier(&hw_with(Some(gpu("RTX 4060", 8188))));
+        assert_eq!(rec.tier, Tier::Dual);
+        assert_eq!(recommend_tier(&hw_with(Some(gpu("A", 8127)))).tier, Tier::Full);
     }
 
     #[test]

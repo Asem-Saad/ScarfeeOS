@@ -19,12 +19,15 @@ The installer checks the hardware, recommends a tier and lets the user choose. A
 
 | Tier | For | Runs |
 |------|-----|------|
+| Dual | Laptops with a GPU of about 8 GB or more | Two local models on the GPU: Qwen for commands, Jais for Arabic writing and explanation |
 | Full | Laptops with a supported GPU | Larger local model on the GPU |
-| Lite | Laptops without a suitable GPU | Smaller local model on the CPU |
+| Lite | Laptops without a suitable GPU | Smaller local model on the CPU, or on the GPU from about 4 GB |
 
+- Dual uses Qwen3-4B with Jais-3-3.7B (about 7.7 GB measured), or Qwen3-8B with Jais-3-3.7B (about 9.8 GB measured) from about 12 GB.
+- Full uses Qwen3-8B (5.8 GB measured). Lite uses Qwen3-4B (3.7 GB measured on a GPU). The Lite model is not final: the CPU benchmark is still pending.
 - Exact models and hardware limits are set once benchmarks finish (see [models.md](models.md)).
 - If the chosen tier is more than the hardware can handle, the installer warns the user but does not block the choice.
-- Both tiers share the code-based features, such as date handling, so they do not depend on the model.
+- All tiers share the code-based features, such as date handling, so they do not depend on the model.
 
 ## Later steps (planned)
 1. Language
