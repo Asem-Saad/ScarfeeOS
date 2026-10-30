@@ -30,9 +30,13 @@ mesa-vulkan-drivers
 pipewire
 pipewire-pulseaudio
 wireplumber
-# ScarfeeOS release files and logo (built from scarfeeos-release/ and scarfeeos-logos/)
+# ScarfeeOS release files, repository definitions and logo (built from scarfeeos-release/, scarfeeos-repos/ and scarfeeos-logos/)
 scarfeeos-release
+scarfeeos-repos
 scarfeeos-logos
+# Desktop session (README.md, "Desktop session")
+cage
+webkit2gtk4.1
 # Languages
 glibc-langpack-en
 glibc-langpack-ar
@@ -83,6 +87,9 @@ generic-release-common
 fedora-release
 fedora-release-common
 fedora-release-identity-basic
+fedora-repos
+fedora-repos-rawhide
+fedora-repos-archive
 fedora-logos
 fedora-logos-classic
 fedora-logos-httpd

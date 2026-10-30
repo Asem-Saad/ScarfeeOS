@@ -18,9 +18,9 @@ Source4:        system-release-cpe
 Source5:        90-scarfeeos.preset
 Source6:        90-scarfeeos-user.preset
 
-# The installed system still takes its package repositories and signing keys
-# from the Fedora packages; see os-image/README.md, "Branded packages".
-Requires:       fedora-repos(%{version})
+# Repository definitions come from scarfeeos-repos, which also pulls in the Fedora
+# signing keys; see os-image/README.md, "Branded packages".
+Requires:       scarfeeos-repos(%{version})
 Recommends:     scarfeeos-logos
 
 Provides:       system-release = %{version}-%{release}

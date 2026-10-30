@@ -33,7 +33,7 @@
     <source path="https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/"/>
   </repository>
 
-  <!-- Put the RPMs built from scarfeeos-release/ and scarfeeos-logos/ in os-image/repo/ and run createrepo_c on it before a build -->
+  <!-- Put the RPMs built from scarfeeos-release/, scarfeeos-repos/ and scarfeeos-logos/ in os-image/repo/ and run createrepo_c on it before a build -->
   <repository type="rpm-md" alias="scarfeeos" priority="1">
     <source path="this://repo"/>
   </repository>
@@ -62,9 +62,13 @@
     <package name="pipewire"/>
     <package name="pipewire-pulseaudio"/>
     <package name="wireplumber"/>
-    <!-- ScarfeeOS release files and logo, built from scarfeeos-release/ and scarfeeos-logos/ (see README.md) -->
+    <!-- ScarfeeOS release files, repository definitions and logo, built from scarfeeos-release/, scarfeeos-repos/ and scarfeeos-logos/ (see README.md) -->
     <package name="scarfeeos-release"/>
+    <package name="scarfeeos-repos"/>
     <package name="scarfeeos-logos"/>
+    <!-- Desktop session: a Wayland kiosk compositor, and the web view the Tauri shell needs (README.md, "Desktop session") -->
+    <package name="cage"/>
+    <package name="webkit2gtk4.1"/>
     <!-- Languages: both stay installed -->
     <package name="glibc-langpack-en"/>
     <package name="glibc-langpack-ar"/>
@@ -120,6 +124,9 @@
     <ignore name="fedora-release"/>
     <ignore name="fedora-release-common"/>
     <ignore name="fedora-release-identity-basic"/>
+    <ignore name="fedora-repos"/>
+    <ignore name="fedora-repos-rawhide"/>
+    <ignore name="fedora-repos-archive"/>
     <ignore name="fedora-logos"/>
     <ignore name="fedora-logos-classic"/>
     <ignore name="fedora-logos-httpd"/>

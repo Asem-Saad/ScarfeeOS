@@ -1,0 +1,27 @@
+# ScarfeeOS package repositories. The packages come from Fedora's public mirrors
+# and are signed with Fedora's keys (package fedora-gpg-keys), so gpgcheck stays on.
+# No repository for H.264 or other patent-licensed codecs is defined here
+# (docs/ip-and-licensing.md rule 4). os-image/test_image_definition.py fails if one is.
+# No countme: ScarfeeOS does not report to anyone (rule 8).
+
+[scarfeeos-base]
+name=ScarfeeOS $releasever - $basearch
+metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-$releasever&arch=$basearch
+enabled=1
+type=rpm
+metadata_expire=7d
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-$basearch
+skip_if_unavailable=False
+
+[scarfeeos-updates]
+name=ScarfeeOS $releasever - $basearch - Updates
+metalink=https://mirrors.fedoraproject.org/metalink?repo=updates-released-f$releasever&arch=$basearch
+enabled=1
+type=rpm
+metadata_expire=6h
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-$basearch
+skip_if_unavailable=False

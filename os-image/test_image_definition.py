@@ -20,6 +20,11 @@ PATENT_CODEC_PATTERN = re.compile(r"(openh264|x264|x265|ffmpeg|libav|fdk-aac|faa
 PROJECT_URL = "https://github.com/Asem-Saad/ScarfeeOS"
 RELEASE_DIR = HERE / "scarfeeos-release"
 LOGOS_DIR = HERE / "scarfeeos-logos"
+REPOS_DIR = HERE / "scarfeeos-repos"
+# A repository whose id, name or address matches this serves patent-licensed codecs (docs/ip-and-licensing.md rule 4).
+CODEC_REPO_PATTERN = re.compile(r"(cisco|openh264|h\.?26[45]|x26[45]|hevc|ffmpeg|freeworld|rpmfusion)", re.IGNORECASE)
+REPO_ADDRESS_KEYS = ("baseurl", "metalink", "mirrorlist")
+GPG_KEY_PATH = "file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-$basearch"
 # Names that must not appear in user-visible release or logo fields.
 FORBIDDEN_NAMES = re.compile(
     r"(fedora|red ?hat|rhel|centos|generic|ubuntu|debian|suse|windows|microsoft|"
@@ -70,6 +75,50 @@ def read_config_packages(root):
         sections[kind].extend(p.get("name") for p in block.findall("package"))
         sections["ignore"].extend(p.get("name") for p in block.findall("ignore"))
     return sections
+
+
+def read_repo_file(text):
+    """Return {repo id: {key: value}} for a dnf .repo file."""
+    repos, current = {}, None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = repos.setdefault(line[1:-1], {})
+        elif current is not None and "=" in line:
+            key, _, value = line.partition("=")
+            current[key.strip()] = value.strip()
+    return repos
+
+
+def enabled_codec_repos(repos):
+    """Ids of enabled repositories that look like a Cisco, H.264 or other codec repository.
+    dnf treats a repository with no `enabled` key as enabled."""
+    found = []
+    for repo_id, options in repos.items():
+        if options.get("enabled", "1") != "1":
+            continue
+        fields = [repo_id, options.get("name", "")] + [options.get(k, "") for k in REPO_ADDRESS_KEYS]
+        if any(CODEC_REPO_PATTERN.search(f) for f in fields):
+            found.append(repo_id)
+    return found
+
+
+# fedora-repos 44-2 ships this as fedora-cisco-openh264.repo, enabled by default (shortened).
+FEDORA_CISCO_REPO = """
+[fedora-cisco-openh264]
+name=Fedora $releasever openh264 (From Cisco) - $basearch
+metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-cisco-openh264-$releasever&arch=$basearch
+type=rpm
+enabled=1
+gpgcheck=1
+
+[fedora-cisco-openh264-debuginfo]
+name=Fedora $releasever openh264 (From Cisco) - $basearch - Debug
+metalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-cisco-openh264-debug-$releasever&arch=$basearch
+enabled=0
+"""
 
 
 class ImageDefinition(unittest.TestCase):
@@ -165,8 +214,9 @@ class ImageDefinition(unittest.TestCase):
         self.assertEqual(tags["URL"], PROJECT_URL)
         self.assertIn("Provides:       system-release = %{version}-%{release}", text)
         self.assertIn("Provides:       system-release(%{version})", text)
-        # Fedora's repository package is still needed for repos and signing keys (README.md).
-        self.assertEqual(tags["Requires"], "fedora-repos(%{version})")
+        # Repository definitions come from scarfeeos-repos; fedora-repos is not required (README.md).
+        self.assertEqual(tags["Requires"], "scarfeeos-repos(%{version})")
+        self.assertNotIn("fedora-repos", text)
         for conflict in ("fedora-release", "generic-release"):
             self.assertIn("Conflicts:      " + conflict + "\n", text)
         for name in re.findall(r"^Source\d+:\s*(\S+)", text, re.MULTILINE):
@@ -206,7 +256,7 @@ class ImageDefinition(unittest.TestCase):
         self.assertTrue(all(l.startswith("enable ") for l in lines[:-1]))
 
     def test_license_files_are_apache(self):
-        for directory in (RELEASE_DIR, LOGOS_DIR):
+        for directory in (RELEASE_DIR, LOGOS_DIR, REPOS_DIR):
             text = (directory / "LICENSE").read_text(encoding="utf-8")
             self.assertIn("Apache License", text)
             self.assertIn("Version 2.0", text)
@@ -241,12 +291,12 @@ class ImageDefinition(unittest.TestCase):
     @unittest.skipUnless(shutil.which("rpmbuild") and shutil.which("rpm"), "rpmbuild is not installed")
     def test_specs_build_into_packages(self):
         expected = {
-            "scarfeeos-release": ("system-release", "scarfeeos-release", "system-release(44)"),
-            "scarfeeos-logos": ("scarfeeos-logos",),
+            "scarfeeos-release": (RELEASE_DIR, ("system-release", "scarfeeos-release", "system-release(44)")),
+            "scarfeeos-logos": (LOGOS_DIR, ("scarfeeos-logos",)),
+            "scarfeeos-repos": (REPOS_DIR, ("scarfeeos-repos(44)",)),
         }
         with tempfile.TemporaryDirectory() as top:
-            for name, provides in expected.items():
-                directory = RELEASE_DIR if name == "scarfeeos-release" else LOGOS_DIR
+            for name, (directory, provides) in expected.items():
                 build = subprocess.run(
                     ["rpmbuild", "-bb", "--define", "_topdir " + top, "--define", "_builddir " + top + "/BUILD",
                      "--define", "_sourcedir " + str(directory), str(directory / (name + ".spec"))],
@@ -258,6 +308,68 @@ class ImageDefinition(unittest.TestCase):
                                         capture_output=True, text=True).stdout
                 for provided in provides:
                     self.assertIn(provided, listed)
+
+    def test_codec_repo_detector_catches_the_cisco_repository(self):
+        # Guards the checks below: the repository fedora-repos enables by default must be caught.
+        self.assertEqual(enabled_codec_repos(read_repo_file(FEDORA_CISCO_REPO)), ["fedora-cisco-openh264"])
+        # A repository with no `enabled` key is enabled in dnf.
+        self.assertEqual(enabled_codec_repos({"x": {"name": "H264 codecs"}}), ["x"])
+        self.assertEqual(enabled_codec_repos({"x": {"name": "H264 codecs", "enabled": "0"}}), [])
+        self.assertEqual(enabled_codec_repos({"ok": {"name": "ScarfeeOS 44", "enabled": "1"}}), [])
+
+    def test_no_enabled_cisco_or_h264_repository_in_any_repo_file(self):
+        files = sorted(HERE.rglob("*.repo"))
+        self.assertIn(REPOS_DIR / "scarfeeos.repo", files)
+        for path in files:
+            repos = read_repo_file(path.read_text(encoding="utf-8"))
+            self.assertEqual(enabled_codec_repos(repos), [], str(path))
+
+    def test_no_cisco_or_h264_repository_in_image_description(self):
+        for repo in self.root.findall("repository"):
+            for field in (repo.get("alias", ""), repo.find("source").get("path")):
+                self.assertIsNone(CODEC_REPO_PATTERN.search(field), field)
+
+    def test_repos_spec_ships_only_the_scarfeeos_repo_file(self):
+        tags, text = read_spec(REPOS_DIR / "scarfeeos-repos.spec")
+        self.assertEqual(tags["Name"], "scarfeeos-repos")
+        self.assertEqual(tags["License"], "Apache-2.0")
+        self.assertEqual(tags["URL"], PROJECT_URL)
+        self.assertIsNone(FORBIDDEN_NAMES.search(tags["Summary"]))
+        self.assertIsNone(FORBIDDEN_NAMES.search(text.split("%description")[1].split("%prep")[0]))
+        # Signing keys come from Fedora's key package; fedora-repos (which enables the Cisco repository) must not coexist.
+        self.assertIn("Requires:       fedora-gpg-keys >= %{version}\n", text)
+        self.assertIn("Conflicts:      fedora-repos\n", text)
+        files = [l for l in text.split("%files")[1].split("%changelog")[0].splitlines() if "/" in l]
+        self.assertEqual(files, ["%config(noreplace) %{_sysconfdir}/yum.repos.d/scarfeeos.repo"])
+        for name in re.findall(r"^Source\d+:\s*(\S+)", text, re.MULTILINE):
+            self.assertTrue((REPOS_DIR / name).is_file(), name)
+
+    def test_repo_file_has_own_ids_and_checks_signatures(self):
+        repos = read_repo_file((REPOS_DIR / "scarfeeos.repo").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(repos), ["scarfeeos-base", "scarfeeos-updates"])
+        for repo_id, options in repos.items():
+            self.assertIsNone(FORBIDDEN_NAMES.search(repo_id), repo_id)
+            self.assertIsNone(FORBIDDEN_NAMES.search(options["name"]), options["name"])
+            self.assertTrue(options["name"].startswith("ScarfeeOS "), options["name"])
+            self.assertEqual(options["enabled"], "1")
+            self.assertEqual(options["gpgcheck"], "1")
+            self.assertEqual(options["gpgkey"], GPG_KEY_PATH)
+            self.assertNotIn("countme", options)
+            self.assertTrue(options["metalink"].startswith("https://mirrors.fedoraproject.org/metalink?repo="), repo_id)
+
+    def test_image_installs_scarfeeos_repos_not_fedora_repos(self):
+        installed = self.config["bootstrap"] + self.config["image"]
+        self.assertIn("scarfeeos-repos", installed)
+        for name in ("fedora-repos", "fedora-repos-rawhide", "fedora-repos-archive"):
+            self.assertNotIn(name, installed)
+            self.assertIn(name, self.config["ignore"])
+
+    def test_desktop_session_packages(self):
+        installed = set(self.config["image"])
+        self.assertTrue({"cage", "webkit2gtk4.1"} <= installed)
+        # a display manager or a full GNOME/KDE session is a different decision (README.md, "Desktop session")
+        for name in installed:
+            self.assertFalse(name.startswith(("gdm", "sddm", "gnome-", "plasma-", "kwin", "lightdm")), name)
 
     def test_no_fedora_trademark_in_image_identity(self):
         self.assertNotIn("fedora", self.root.get("name").lower())
