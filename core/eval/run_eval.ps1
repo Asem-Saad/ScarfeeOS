@@ -5,7 +5,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Label,
     [string]$ServerUrl = 'http://127.0.0.1:8080',
-    [int]$MaxTokens = 512
+    [int]$MaxTokens = 512,
+    [string]$Model = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,7 +44,7 @@ $rows = Get-Content (Join-Path $here 'prompts.jsonl') -Encoding UTF8 | ForEach-O
 $checked = 0; $passed = 0; $failed = 0
 
 foreach ($row in $rows) {
-    $body = @{
+    $request = @{
         messages = @(
             @{ role = 'system'; content = $system },
             @{ role = 'user'; content = $row.prompt }
@@ -52,7 +53,9 @@ foreach ($row in $rows) {
         max_tokens = $MaxTokens
         temperature = 0
         chat_template_kwargs = @{ enable_thinking = $false }
-    } | ConvertTo-Json -Depth 12
+    }
+    if ($Model) { $request.model = $Model }
+    $body = $request | ConvertTo-Json -Depth 12
 
     $started = Get-Date
     $reply = ''; $calls = @(); $err = $null

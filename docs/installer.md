@@ -14,9 +14,21 @@ Select your language / اختر لغتك
 - The choice sets: system locale, keyboard layout (with the option to add the other language's layout), default AI conversation and speech language, calendar and numeral defaults.
 - Both languages remain installed; the user can switch later in Settings without a restart.
 
+## AI tier selection
+The installer checks the hardware, recommends a tier and lets the user choose. A GPU is not required to install ScarfeeOS.
+
+| Tier | For | Runs |
+|------|-----|------|
+| Full | Laptops with a supported GPU | Larger local model on the GPU |
+| Lite | Laptops without a suitable GPU | Smaller local model on the CPU |
+
+- Exact models and hardware limits are set once benchmarks finish (see [models.md](models.md)).
+- If the chosen tier is more than the hardware can handle, the installer warns the user but does not block the choice.
+- Both tiers share the code-based features, such as date handling, so they do not depend on the model.
+
 ## Later steps (planned)
 1. Language
 2. Disk and account setup
-3. Hardware check and local AI model tier selection
+3. Hardware check and AI tier selection
 4. Optional: connect Claude (API key), or stay local-only
 5. Finish
