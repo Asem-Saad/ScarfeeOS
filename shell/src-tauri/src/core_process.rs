@@ -78,16 +78,25 @@ impl Core {
                 *guard = None;
             }
         }
-        if guard.is_none() {
-            *guard = Some(self.start()?);
+        let mut reused = guard.is_some();
+        loop {
+            if guard.is_none() {
+                *guard = Some(self.start()?);
+            }
+            let session = guard.as_mut().expect("session was just started");
+            let sent = writeln!(session.stdin, "{line}").and_then(|()| session.stdin.flush());
+            if sent.is_ok() {
+                break;
+            }
+            // The core never read the request, so a child that died since the last one
+            // is replaced once and the request is sent again.
+            *guard = None;
+            if !reused {
+                return Err(stopped("the core stopped before it read the request"));
+            }
+            reused = false;
         }
         let session = guard.as_mut().expect("session was just started");
-
-        let sent = writeln!(session.stdin, "{line}").and_then(|()| session.stdin.flush());
-        if sent.is_err() {
-            *guard = None;
-            return Err(stopped("the core stopped before it read the request"));
-        }
         let deadline = Instant::now() + self.timeout;
         loop {
             let wait = deadline.saturating_duration_since(Instant::now());
@@ -216,6 +225,14 @@ done
         Path::new(&format!("/proc/{pid}")).exists()
     }
 
+    /// Gone, or finished and waiting to be collected.
+    fn exited(pid: u64) -> bool {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')),
+            Err(_) => true,
+        }
+    }
+
     #[test]
     fn returns_the_response_with_the_same_id() {
         let dir = Scratch::new();
@@ -310,6 +327,10 @@ printf '{"id":%s,"kind":"reply","pid":%s}\n' "$id" "$$"
             SHORT,
         );
         let first = parse(&core.ask(&req(1, "hi")).unwrap())["pid"].as_u64().unwrap();
+        let waited = Instant::now();
+        while !exited(first) && waited.elapsed() < Duration::from_secs(10) {
+            thread::sleep(Duration::from_millis(10));
+        }
         let second = parse(&core.ask(&req(2, "hi")).unwrap())["pid"].as_u64().unwrap();
         assert_ne!(first, second);
         assert_eq!(parse(&core.ask(&req(3, "hi")).unwrap())["id"], 3);
