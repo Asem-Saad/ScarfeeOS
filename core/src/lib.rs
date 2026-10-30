@@ -6,4 +6,5 @@ pub mod hijri;
 pub mod ipc;
 pub mod lang;
 pub mod provider;
+pub mod tiers;
 pub mod tools;

@@ -4,14 +4,23 @@
 use std::fs;
 use std::process::Command;
 
-// Provisional thresholds: benchmarks will set the final values (see docs/models.md).
-/// Smallest GPU memory, in MiB, for which the Full tier is recommended.
-pub const FULL_MIN_GPU_MEMORY_MIB: u64 = 6 * 1024;
+// Thresholds are a project owner decision, set from benchmark measurements (see docs/models.md).
+/// Some cards report slightly less memory than their nominal size.
+const GPU_MEMORY_TOLERANCE_MIB: u64 = 128;
+/// Smallest GPU memory, in MiB, for which the Full tier is recommended:
+/// 6 GB minus the tolerance.
+pub const FULL_MIN_GPU_MEMORY_MIB: u64 = 6 * 1024 - GPU_MEMORY_TOLERANCE_MIB;
+/// Smallest GPU memory, in MiB, for which the Dual tier is recommended (two models loaded).
+pub const DUAL_MIN_GPU_MEMORY_MIB: u64 = 8 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
-    Full,
+    /// No suitable GPU: one small model on the CPU.
     Lite,
+    /// One larger model on the GPU.
+    Full,
+    /// Two models on the GPU: commands and Arabic writing.
+    Dual,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -105,9 +114,16 @@ pub fn detect() -> Hardware {
     }
 }
 
-/// Recommends a tier. This is advice only: the user may choose either tier.
+/// Recommends a tier. This is advice only: the user may choose any tier.
 pub fn recommend_tier(hw: &Hardware) -> Recommendation {
     let (tier, reason) = match &hw.gpu {
+        Some(gpu) if gpu.memory_mib >= DUAL_MIN_GPU_MEMORY_MIB => (
+            Tier::Dual,
+            format!(
+                "{} has {} MiB of memory (at least {} MiB needed)",
+                gpu.name, gpu.memory_mib, DUAL_MIN_GPU_MEMORY_MIB
+            ),
+        ),
         Some(gpu) if gpu.memory_mib >= FULL_MIN_GPU_MEMORY_MIB => (
             Tier::Full,
             format!(
@@ -220,17 +236,31 @@ mod tests {
 
     #[test]
     fn gpu_with_enough_memory_gets_full() {
-        let rec = recommend_tier(&hw_with(Some(gpu("RTX 3060", 12288))));
+        let rec = recommend_tier(&hw_with(Some(gpu("RTX 3050", 6144))));
         assert_eq!(rec.tier, Tier::Full);
+        assert!(rec.reason.contains("RTX 3050"));
+    }
+
+    #[test]
+    fn gpu_with_much_memory_gets_dual() {
+        let rec = recommend_tier(&hw_with(Some(gpu("RTX 3060", 12288))));
+        assert_eq!(rec.tier, Tier::Dual);
         assert!(rec.reason.contains("RTX 3060"));
     }
 
     #[test]
-    fn threshold_is_inclusive() {
-        let at = recommend_tier(&hw_with(Some(gpu("A", FULL_MIN_GPU_MEMORY_MIB))));
-        let below = recommend_tier(&hw_with(Some(gpu("A", FULL_MIN_GPU_MEMORY_MIB - 1))));
-        assert_eq!(at.tier, Tier::Full);
-        assert_eq!(below.tier, Tier::Lite);
+    fn thresholds_are_inclusive() {
+        let tier_at = |mib| recommend_tier(&hw_with(Some(gpu("A", mib)))).tier;
+        assert_eq!(tier_at(FULL_MIN_GPU_MEMORY_MIB), Tier::Full);
+        assert_eq!(tier_at(FULL_MIN_GPU_MEMORY_MIB - 1), Tier::Lite);
+        assert_eq!(tier_at(DUAL_MIN_GPU_MEMORY_MIB), Tier::Dual);
+        assert_eq!(tier_at(DUAL_MIN_GPU_MEMORY_MIB - 1), Tier::Full);
+    }
+
+    #[test]
+    fn card_reporting_slightly_under_6_gb_gets_full() {
+        let rec = recommend_tier(&hw_with(Some(gpu("A", 6144 - 100))));
+        assert_eq!(rec.tier, Tier::Full);
     }
 
     #[test]
