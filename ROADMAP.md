@@ -2,8 +2,8 @@
 
 ## Phase 0: Foundations
 - [x] Repo structure and design docs
-- [ ] Choose license
-- [ ] Benchmark candidate local models (Qwen, Gemma, Jais) on Arabic and English tasks
+- [ ] Choose license and complete legal review (see docs/ip-and-licensing.md)
+- [ ] Benchmark candidate local models (only commercially permissive licenses, e.g. Apache-2.0 Qwen; see docs/ip-and-licensing.md) on Arabic and English tasks
 
 ## Phase 1: AI core (runs on any Linux machine)
 - [ ] Provider abstraction: `local` (llama.cpp) and `claude` (API key)
