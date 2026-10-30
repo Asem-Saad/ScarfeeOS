@@ -63,15 +63,17 @@ impl<'a> Assistant<'a> {
     }
 
     pub fn handle(&self, user_text: &str, language: Language) -> Outcome {
-        if guard::asks_religious(user_text) {
-            return Outcome::Declined;
-        }
+        // Islam, Salah and Imam are also people's names, so a matching word alone
+        // cannot decline "Remind me to call Islam". Only commands get through
+        // here: any text answer is thrown away, so the model's words never show.
+        let religious = guard::asks_religious(user_text);
         match guard::asks_for_live_data(user_text) {
+            _ if religious => {}
             Some(LiveData::Time) => return self.time_outcome(requested_place(user_text).as_deref()),
             Some(live) => return Outcome::CannotDoOffline(live),
             None => {}
         }
-        if guard::asks_for_hijri(user_text) {
+        if !religious && guard::asks_for_hijri(user_text) {
             return match gregorian_date_in(user_text) {
                 Some(date) => Outcome::HijriApprox { gregorian: date, hijri: hijri::to_hijri_approx(date) },
                 None => Outcome::MissingDate,
@@ -92,6 +94,7 @@ impl<'a> Assistant<'a> {
         let translating = guard::asks_to_translate(user_text);
         let tools = tool_schema_for(!translating);
         match self.model.chat(&system, user_text, &tools) {
+            Ok(ModelReply::Text(_)) | Err(_) if religious => Outcome::Declined,
             Err(e) => Outcome::Error(e),
             Ok(ModelReply::Text(text)) => self.checked_reply(&system, user_text, language, &tools, text),
             Ok(ModelReply::ToolCalls(calls)) => self.tool_outcome(user_text, now, translating, calls),
@@ -705,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn religious_questions_are_declined_without_the_model() {
+    fn religious_questions_are_declined_and_the_answer_is_thrown_away() {
         let m = model(text("The five pillars are ..."));
         for (user, language) in [
             ("What are the five pillars of Islam?", Language::English),
@@ -714,7 +717,20 @@ mod tests {
             ("ما حكم الصلاة في السفر", Language::Arabic),
             ("What's the news about Islam?", Language::English),
         ] {
-            assert_eq!(turn(&m, user, language), (Outcome::Declined, 0), "{user}");
+            assert_eq!(turn(&m, user, language).0, Outcome::Declined, "{user}");
+        }
+        let failed = model(Err("server down".into()));
+        assert_eq!(turn(&failed, "Who wrote the Bible?", Language::English).0, Outcome::Declined);
+    }
+
+    #[test]
+    fn names_that_are_religious_words_do_not_block_commands() {
+        let m = model(call("create_reminder", r#"{"text":"call Islam","time":"x"}"#));
+        for user in ["Remind me to call Islam tomorrow at 10 am.", "ذكرني أكلم إسلام بكرة الساعة 10 الصبح"] {
+            match turn(&m, user, Language::English).0 {
+                Outcome::Run(ToolCall::CreateReminder { time, .. }) => assert_eq!(time, "2026-10-31T10:00:00"),
+                other => panic!("{user}: {other:?}"),
+            }
         }
     }
 

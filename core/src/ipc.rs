@@ -237,7 +237,7 @@ mod tests {
     fn confirmation_clarification_and_missing_time_kinds() {
         let m = model(call("set_language", r#"{"lang":"ar"}"#));
         assert_eq!(
-            ask(&m, &req("Translate this sentence into Arabic: good morning")),
+            ask(&m, &req("Switch the system language to Arabic")),
             json!({"id": 7, "kind": "needs_confirmation", "tool": "set_language", "arguments": {"lang": "ar"}})
         );
         let m = model(call("create_reminder", r#"{"text":"x","time":"2020-01-01T11:00:00"}"#));

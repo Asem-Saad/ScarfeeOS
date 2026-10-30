@@ -69,6 +69,17 @@ fn describe(outcome: &Outcome) -> String {
         Outcome::NeedsClarification(call) => format!("ask the user to confirm the time: {call:?}"),
         Outcome::NeedsConfirmation(call) => format!("ask the user to confirm before running: {call:?}"),
         Outcome::MissingTime(call) => format!("ask the user for a date and time: {call:?}"),
+        Outcome::Declined => "declined: religious content is not provided".into(),
+        Outcome::HijriApprox { gregorian, hijri } => format!(
+            "about {} {} {} AH ({:04}-{:02}-{:02}), approximate",
+            hijri.day,
+            hijri.month_name_en(),
+            hijri.year,
+            gregorian.year,
+            gregorian.month,
+            gregorian.day
+        ),
+        Outcome::MissingDate => "ask the user for a Gregorian date in digits".into(),
         Outcome::Error(e) => format!("error: {e}"),
     }
 }
