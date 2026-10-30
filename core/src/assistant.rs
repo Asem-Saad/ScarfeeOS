@@ -54,12 +54,20 @@ pub enum Outcome {
 
 pub struct Assistant<'a> {
     model: &'a dyn Model,
+    writer: Option<&'a dyn Model>,
     clock: &'a dyn Clock,
 }
 
 impl<'a> Assistant<'a> {
     pub fn new(model: &'a dyn Model, clock: &'a dyn Clock) -> Self {
-        Assistant { model, clock }
+        Assistant { model, writer: None, clock }
+    }
+
+    /// Adds a second model that writes the text replies. The first model is
+    /// still asked first, with tools, and its tool calls are used as they are.
+    pub fn with_writer(mut self, writer: &'a dyn Model) -> Self {
+        self.writer = Some(writer);
+        self
     }
 
     pub fn handle(&self, user_text: &str, language: Language) -> Outcome {
@@ -96,14 +104,44 @@ impl<'a> Assistant<'a> {
         match self.model.chat(&system, user_text, &tools) {
             Ok(ModelReply::Text(_)) | Err(_) if religious => Outcome::Declined,
             Err(e) => Outcome::Error(e),
-            Ok(ModelReply::Text(text)) => self.checked_reply(&system, user_text, language, &tools, text),
+            Ok(ModelReply::Text(text)) => match self.written_by_writer(user_text, language, now) {
+                Some(outcome) => outcome,
+                None => self.checked_reply(self.model, &system, user_text, language, &tools, text),
+            },
             Ok(ModelReply::ToolCalls(calls)) => self.tool_outcome(user_text, now, translating, calls),
         }
     }
 
-    /// Asks the model once more when the reply has words in a foreign script,
+    /// The writer's reply to the same text, without tools. `None` when there is
+    /// no writer or it failed, so the command model's own text is used instead.
+    fn written_by_writer(&self, user_text: &str, language: Language, now: LocalTime) -> Option<Outcome> {
+        let writer = self.writer?;
+        let system = format!(
+            "You are the assistant built into ScarfeeOS. Today is {}, {:04}-{:02}-{:02}. \
+             Reply in the language and dialect the user wrote in. Never invent data.",
+            now.weekday_name(),
+            now.date.year,
+            now.date.month,
+            now.date.day
+        );
+        let no_tools = json!([]);
+        match writer.chat(&system, user_text, &no_tools) {
+            Ok(ModelReply::Text(text)) => Some(self.checked_reply(writer, &system, user_text, language, &no_tools, text)),
+            Ok(ModelReply::ToolCalls(_)) | Err(_) => None,
+        }
+    }
+
+    /// Asks `model` once more when the reply has words in a foreign script,
     /// and keeps whichever reply has fewer of them.
-    fn checked_reply(&self, system: &str, user_text: &str, language: Language, tools: &Value, text: String) -> Outcome {
+    fn checked_reply(
+        &self,
+        model: &dyn Model,
+        system: &str,
+        user_text: &str,
+        language: Language,
+        tools: &Value,
+        text: String,
+    ) -> Outcome {
         let issues = guard::check_reply(&text, language);
         if !issues.is_empty() {
             let name = match language {
@@ -113,7 +151,7 @@ impl<'a> Assistant<'a> {
             let retry = format!(
                 "{system} Your last reply had words in a foreign script. Reply again in {name}, with no words in other scripts."
             );
-            if let Ok(ModelReply::Text(again)) = self.model.chat(&retry, user_text, tools) {
+            if let Ok(ModelReply::Text(again)) = model.chat(&retry, user_text, tools) {
                 let again_issues = guard::check_reply(&again, language);
                 if again_issues.len() < issues.len() {
                     return Outcome::Reply { text: again, issues: again_issues };
@@ -861,5 +899,83 @@ mod tests {
     fn clean_reply_is_not_retried() {
         let m = model(text("أهلاً"));
         assert_eq!(turn(&m, "مرحبا", Language::Arabic).1, 1);
+    }
+
+    /// Runs one turn with a writer and returns the outcome with the call counts
+    /// of the command model and the writer.
+    fn turn_with_writer(m: &MockModel, w: &MockModel, text: &str, language: Language) -> (Outcome, u32, u32) {
+        let clock = FixedClock(NOW);
+        let outcome = Assistant::new(m, &clock).with_writer(w).handle(text, language);
+        (outcome, m.calls.get(), w.calls.get())
+    }
+
+    fn reply(text: &str) -> Outcome {
+        Outcome::Reply { text: text.into(), issues: vec![] }
+    }
+
+    #[test]
+    fn tool_call_never_reaches_the_writer() {
+        let m = model(call("open_app", r#"{"name":"Files"}"#));
+        let w = model(text("must not be used"));
+        let (outcome, cmd, writer) = turn_with_writer(&m, &w, "Open Files", Language::English);
+        assert_eq!(outcome, Outcome::Run(ToolCall::OpenApp { name: "Files".into() }));
+        assert_eq!((cmd, writer), (1, 0));
+    }
+
+    #[test]
+    fn text_is_written_by_the_writer_without_tools() {
+        let m = model(text("command model text"));
+        let w = model(text("اهلا بك"));
+        let (outcome, cmd, writer) = turn_with_writer(&m, &w, "مرحبا", Language::Arabic);
+        assert_eq!(outcome, reply("اهلا بك"));
+        assert_eq!((cmd, writer), (1, 1));
+        assert_eq!(*w.last_tools.borrow(), json!([]));
+        assert!(w.last_system.borrow().contains("language and dialect"));
+        assert!(w.last_system.borrow().contains("Never invent data"));
+        assert_eq!(offered_tools(&m).len(), 6);
+    }
+
+    #[test]
+    fn writer_failure_falls_back_to_the_command_model_text() {
+        for failure in [Err("local provider: request failed".to_string()), call("open_app", r#"{"name":"x"}"#)] {
+            let m = model(text("command model text"));
+            let w = model(failure);
+            let (outcome, cmd, writer) = turn_with_writer(&m, &w, "Explain this", Language::English);
+            assert_eq!(outcome, reply("command model text"));
+            assert_eq!((cmd, writer), (1, 1));
+        }
+    }
+
+    #[test]
+    fn religious_news_and_hijri_requests_call_no_writer() {
+        let run = |text: &str| {
+            let m = model(text_reply());
+            let w = model(text_reply());
+            turn_with_writer(&m, &w, text, Language::English)
+        };
+        fn text_reply() -> Result<ModelReply, String> {
+            Ok(ModelReply::Text("some text".into()))
+        }
+        let (outcome, _, writer) = run("What is the ruling on fasting in Islam?");
+        assert_eq!((outcome, writer), (Outcome::Declined, 0));
+        assert_eq!(run("What's the news?"), (Outcome::CannotDoOffline(LiveData::News), 0, 0));
+        assert_eq!(run("What's the weather in Cairo today?"), (Outcome::CannotDoOffline(LiveData::Weather), 0, 0));
+        assert_eq!(run("What time is it?"), (Outcome::Time(NOW), 0, 0));
+        let (outcome, cmd, writer) = run("Convert 2026-01-01 to Hijri");
+        assert!(matches!(outcome, Outcome::HijriApprox { .. }), "{outcome:?}");
+        assert_eq!((cmd, writer), (0, 0));
+    }
+
+    #[test]
+    fn foreign_script_in_the_writer_reply_is_retried_on_the_writer() {
+        let bad = "تم فتح الملف привет بنجاح";
+        let good = "تم فتح الملف بنجاح";
+        let m = model(text("command model text"));
+        let w = model_seq(vec![text(bad), text(good)]);
+        let (outcome, cmd, writer) = turn_with_writer(&m, &w, "اشرح لي ما حدث", Language::Arabic);
+        assert_eq!(outcome, reply(good));
+        assert_eq!((cmd, writer), (1, 2));
+        assert!(w.last_system.borrow().contains("Reply again in Arabic"));
+        assert!(!m.last_system.borrow().contains("Reply again"));
     }
 }

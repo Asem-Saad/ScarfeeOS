@@ -2,7 +2,9 @@ use scarfeeos_core::assistant::{Assistant, Outcome};
 use scarfeeos_core::guard::LiveData;
 use scarfeeos_core::ipc;
 use scarfeeos_core::lang::Language;
-use scarfeeos_core::provider::LocalProvider;
+use std::time::Duration;
+
+use scarfeeos_core::provider::{LocalConfig, LocalProvider};
 use scarfeeos_core::tools::SystemClock;
 
 fn main() {
@@ -22,10 +24,38 @@ fn main() {
     }
 }
 
-/// One turn against the local server at http://127.0.0.1:8080.
+/// The command model at `SCARFEEOS_COMMAND_URL`, default http://127.0.0.1:8080,
+/// and the writer at `SCARFEEOS_WRITER_URL` when that is set. Both must be loopback.
+fn providers() -> Result<(LocalProvider, Option<LocalProvider>), String> {
+    let url = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
+    let mut command = LocalConfig::default();
+    if let Some(base_url) = url("SCARFEEOS_COMMAND_URL") {
+        command.base_url = base_url;
+    }
+    // Jais took up to 120 seconds in testing, so the writer waits longer.
+    let writer = url("SCARFEEOS_WRITER_URL").map(|base_url| LocalConfig {
+        base_url,
+        timeout: Duration::from_secs(300),
+        ..LocalConfig::default()
+    });
+    Ok((LocalProvider::new(command)?, writer.map(LocalProvider::new).transpose()?))
+}
+
+fn assistant_for<'a>(command: &'a LocalProvider, writer: &'a Option<LocalProvider>) -> Assistant<'a> {
+    let assistant = Assistant::new(command, &SystemClock);
+    match writer {
+        Some(writer) => assistant.with_writer(writer),
+        None => assistant,
+    }
+}
+
+/// One turn against the local servers.
 fn chat(text: &str, lang: Language) {
-    let provider = LocalProvider::default();
-    let outcome = Assistant::new(&provider, &SystemClock).handle(text, lang);
+    let (command, writer) = providers().unwrap_or_else(|e| {
+        eprintln!("chat: {e}");
+        std::process::exit(2);
+    });
+    let outcome = assistant_for(&command, &writer).handle(text, lang);
     println!("{}", describe(&outcome));
     if matches!(outcome, Outcome::Error(_)) {
         std::process::exit(1);
@@ -34,8 +64,11 @@ fn chat(text: &str, lang: Language) {
 
 /// JSON lines on stdin and stdout, for the shell. Only responses go to stdout.
 fn serve() {
-    let provider = LocalProvider::default();
-    let assistant = Assistant::new(&provider, &SystemClock);
+    let (command, writer) = providers().unwrap_or_else(|e| {
+        eprintln!("serve: {e}");
+        std::process::exit(2);
+    });
+    let assistant = assistant_for(&command, &writer);
     if let Err(e) = ipc::serve(&assistant, std::io::stdin().lock(), std::io::stdout().lock()) {
         eprintln!("serve: {e}");
         std::process::exit(1);
