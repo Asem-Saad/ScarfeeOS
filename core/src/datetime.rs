@@ -97,7 +97,7 @@ impl DayPart {
     fn to_24h(self, hour: u32) -> u32 {
         match self {
             _ if hour == 0 => 0,
-            DayPart::Morning | DayPart::Night if hour == 12 => 0,
+            DayPart::Morning | DayPart::Evening | DayPart::Night if hour == 12 => 0,
             DayPart::Morning => hour,
             DayPart::Night if hour < 6 => hour,
             DayPart::Noon if (1..=6).contains(&hour) => hour + 12,
@@ -270,10 +270,13 @@ pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
     // Tonight or no day at all moves on one day, because that hour has passed.
     let (time, extra_day, ambiguous) = match (time, part) {
         (Some((h, m)), Some(p)) => {
-            let small_hours = matches!(p, DayPart::Night) && (h == 12 || (1..6).contains(&h));
+            let small_hours = match p {
+                DayPart::Night => h == 12 || (1..6).contains(&h),
+                DayPart::Evening => h == 12,
+                _ => false,
+            };
             let rolls_over = small_hours && offset.unwrap_or(0) == 0;
-            let unclear = matches!(p, DayPart::Evening) && h == 12;
-            (Some((p.to_24h(h), m)), i64::from(rolls_over), unclear)
+            (Some((p.to_24h(h), m)), i64::from(rolls_over), false)
         }
         (Some((h, m)), None) => (Some((h, m)), 0, (1..=12).contains(&h)),
         (None, Some(p)) => (Some((p.default_hour(), 0)), 0, false),
@@ -393,6 +396,9 @@ mod tests {
         // Said without a later day, the hour has already passed today.
         assert_eq!(iso("الساعة 12 بالليل"), "2026-10-31T00:00:00");
         assert_eq!(iso("اليوم الساعة 2 بالليل"), "2026-10-31T02:00:00");
+        // Native speaker: 12 مساء is midnight, not noon.
+        assert_eq!(iso("غدا الساعة 12 مساء"), "2026-10-31T00:00:00");
+        assert_eq!(iso("الساعة 12 مساء"), "2026-10-31T00:00:00");
         assert!(!resolve("بكرة الساعة 12 بالليل", TODAY).unwrap().ambiguous);
     }
 
@@ -402,7 +408,7 @@ mod tests {
         assert!(ambiguous("الساعة 11"));
         assert!(ambiguous("meet at 2"));
         assert!(ambiguous("موعدنا الساعة الثانية"));
-        assert!(ambiguous("غدا الساعة 12 مساء"));
+        assert!(!ambiguous("غدا الساعة 12 مساء"));
         assert!(!ambiguous("tomorrow at 14:30"));
         assert!(!ambiguous("tomorrow at 2 pm"));
         assert!(!ambiguous("بكرة الصبح"));
