@@ -2,7 +2,7 @@
 
 An AI-first operating system for laptops. Talk to it or type to it, in **English or Arabic**.
 
-> Status: early design and scaffolding. Nothing here is usable yet.
+> Status: early development. The assistant and its panel run on a development machine, but there is no installable system yet. See [where things stand](docs/lifecycle.md#where-things-stand).
 
 ## Vision
 
@@ -31,9 +31,24 @@ ScarfeeOS is a Linux-based system (Fedora as the base), not a new kernel. See [d
 
 English and Arabic are required for every user-facing feature. See [docs/i18n-and-arabic.md](docs/i18n-and-arabic.md).
 
-## Roadmap
+## Project lifecycle
 
-See [ROADMAP.md](ROADMAP.md).
+| Stage | Status |
+|-------|--------|
+| 1. Foundations | Done |
+| 2. AI core | Mostly done |
+| 3. Speech | In progress |
+| 4. Desktop shell and first apps | In progress |
+| 5. Bootable image | In progress |
+| 6. Productivity apps | Not started |
+| 7. Hardware and alpha testing | Not started |
+| 8. Legal review | Not started, kept until a working product exists |
+| 9. Beta and first release | Not started |
+| 10. Maintenance | Not started |
+
+**Current agenda:** fix the remaining assistant and installer bugs, resolve a voice that meets the licensing policy, test on real hardware, then build the first bootable image.
+
+Full details, including what each stage requires and what is not proven yet: [docs/lifecycle.md](docs/lifecycle.md). Task-level detail: [ROADMAP.md](ROADMAP.md).
 
 ## Legal
 
