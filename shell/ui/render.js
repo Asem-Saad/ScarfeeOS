@@ -187,10 +187,10 @@ function responseFromHttp(status, bodyText) {
   return { kind: 'error', message: `HTTP ${status}` };
 }
 
-const api = { fill, formatElapsed, formatTime, describeTool, describeResponse, responseFromHttp };
+const renderApi = { fill, formatElapsed, formatTime, describeTool, describeResponse, responseFromHttp };
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = api;
+  module.exports = renderApi;
 } else {
-  globalThis.ScarfeeRender = api;
+  globalThis.ScarfeeRender = renderApi;
 }

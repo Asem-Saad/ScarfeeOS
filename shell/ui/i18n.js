@@ -51,10 +51,10 @@ function createI18n(catalogs, root, initialLang) {
   return { t, translate, setLanguage, getLanguage: () => current };
 }
 
-const api = { parseFtl, directionOf, createI18n };
+const i18nApi = { parseFtl, directionOf, createI18n };
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = api;
+  module.exports = i18nApi;
 } else {
-  globalThis.ScarfeeI18n = api;
+  globalThis.ScarfeeI18n = i18nApi;
 }
