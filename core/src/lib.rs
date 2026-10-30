@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod assistant;
 pub mod calendar;
 pub mod datetime;
