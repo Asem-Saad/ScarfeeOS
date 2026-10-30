@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import wave
 
 LANGUAGES = ('en', 'ar')
@@ -134,11 +135,33 @@ def missing_weights():
     return missing
 
 
+def stub_encodec():
+    """Stands in for `encodec` (CC-BY-NC, not installable here) when it is absent.
+
+    vocos imports EncodecModel at the top of vocos/feature_extractors.py but only the
+    Encodec-based vocoder calls it; the mel vocoder SILMA loads never does.
+    """
+    if 'encodec' in sys.modules or importlib.util.find_spec('encodec') is not None:
+        return
+
+    def unavailable(*_args, **_kwargs):
+        raise ImportError('encodec is not installed (CC-BY-NC); only the mel vocoder is supported')
+
+    class EncodecModel:
+        __init__ = encodec_model_24khz = encodec_model_48khz = staticmethod(unavailable)
+
+    module = types.ModuleType('encodec')
+    module.__spec__ = importlib.util.spec_from_loader('encodec', None)
+    module.EncodecModel = EncodecModel
+    sys.modules['encodec'] = module
+
+
 def load_model():
     missing = missing_weights()
     if missing:
         raise Fail(4, 'model files are not cached and this program never downloads: ' + ', '.join(missing)
                    + '. Fetch them once with the pre-fetch step in core/tts/README.md')
+    stub_encodec()
     try:
         from silma_tts.api import SilmaTTS
     except ImportError as e:

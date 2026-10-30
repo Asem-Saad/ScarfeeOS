@@ -1,6 +1,10 @@
 # Python packages for silma_speak.py, pinned to the set that was installed and run on 2026-10-30
 # (Linux x86_64, Python 3.12, CPU only). Install only inside a virtual environment, never into the
-# system Python. See README.md for the steps and for the licenses that fail docs/ip-and-licensing.md.
+# system Python. See README.md for the steps and for the licenses.
+#
+# Install with `pip install --no-deps -r requirements.txt`. This list is the complete set, and it
+# leaves out encodec (CC-BY-NC) and Unidecode (GPL), which vocos and silma_tts still list as
+# dependencies: without --no-deps pip would add them back.
 --extra-index-url https://download.pytorch.org/whl/cpu
 annotated-doc==0.0.5
 annotated-types==0.8.0
@@ -26,7 +30,6 @@ editdistance==0.8.1
 einops==0.8.2
 einx==0.4.3
 ema-pytorch==0.8.3
-encodec==0.1.1
 fastapi==0.162.0
 filelock==3.32.7
 flatbuffers==25.12.19
@@ -131,7 +134,6 @@ typeguard==4.6.0
 typer==0.27.3
 typing-inspection==0.4.4
 typing_extensions==4.16.0
-Unidecode==1.4.0
 urllib3==2.8.0
 uvicorn==0.54.0
 vocos==0.1.0

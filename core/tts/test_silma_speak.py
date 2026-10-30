@@ -274,6 +274,39 @@ class Offline(Case):
         self.assertRefused(code, err, 4, 'not installed')
 
 
+class EncodecStub(Case):
+    def test_stub_is_registered_when_encodec_is_absent(self):
+        with mock.patch.dict(sys.modules, {}), mock.patch.object(silma_speak.importlib.util, 'find_spec', return_value=None):
+            sys.modules.pop('encodec', None)
+            silma_speak.stub_encodec()
+            from encodec import EncodecModel
+            with self.assertRaises(ImportError):
+                EncodecModel.encodec_model_24khz(pretrained=True)
+            with self.assertRaises(ImportError):
+                EncodecModel()
+
+    def test_installed_encodec_is_left_alone(self):
+        with mock.patch.dict(sys.modules, {}), \
+                mock.patch.object(silma_speak.importlib.util, 'find_spec', return_value=object()):
+            sys.modules.pop('encodec', None)
+            silma_speak.stub_encodec()
+            self.assertNotIn('encodec', sys.modules)
+
+    def test_stub_survives_a_second_call_and_a_spec_lookup(self):
+        with mock.patch.dict(sys.modules, {}):
+            sys.modules.pop('encodec', None)
+            silma_speak.stub_encodec()
+            first = sys.modules['encodec']
+            silma_speak.stub_encodec()
+            self.assertIs(sys.modules['encodec'], first)
+            self.assertIsNotNone(silma_speak.importlib.util.find_spec('encodec'))
+
+    def test_the_model_load_installs_the_stub(self):
+        with mock.patch.object(silma_speak, 'stub_encodec') as stub:
+            self.assertEqual(self.run_main()[0], 0)
+        stub.assert_called_once_with()
+
+
 class Output(Case):
     def test_one_wav_with_every_sentence_and_pauses(self):
         self.assertEqual(self.run_main(sentences='A.\nB.\nC.\n')[0], 0)
