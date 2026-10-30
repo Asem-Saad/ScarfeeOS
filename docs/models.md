@@ -1,10 +1,10 @@
 # Models and datasets
 
-Candidates for the local AI. Policy: Apache-2.0 or MIT only, no custom or use-restricted terms (see [ip-and-licensing.md](ip-and-licensing.md)). A model is only a default after it passes the Arabic and English benchmark in `core/eval/`. Nothing here recommends a default.
+Candidates for the local AI. Policy: Apache-2.0 or MIT only, no custom or use-restricted terms (see [ip-and-licensing.md](ip-and-licensing.md)). A model is only a default after it passes the Arabic and English benchmark in `core/eval/`. The owner's choice of models is recorded under "Benchmark on the RTX 3050" below; it rests on the owner's own measurements and judgement, not yet on a `core/eval/` run.
 
 Status: **verified** = the license text (LICENSE file) or the license statement on the official model card or repository was read on the primary source on the date shown. **unverified** = not read on a primary source, or the primary sources conflict; do not rely on it. Secondary sources were not used. "Verified" says what the license is, not that it passes rule 3 (see the Habibi rows).
 
-All "Checked" dates are 2026-10-30. Counts at the end of this file.
+"Checked" dates are 2026-10-30, except the Vocos, CATT and Jais tech-report checks, which are 2026-10-31. Counts at the end of this file.
 
 ## Text (LLM)
 
@@ -35,10 +35,31 @@ Further Arabic-capable candidates to benchmark at 6 GB of GPU memory or less. Wh
 | Model | Params | License | Status | Source | Training data / notes |
 |-------|--------|---------|--------|--------|-----------------------|
 | Phi-4-mini-instruct (Microsoft) | 3.8B (card) | MIT | verified 2026-10-30 (LICENSE file; card says "licensed under the MIT license") | https://huggingface.co/microsoft/Phi-4-mini-instruct | Card: 5T tokens from filtered public documents and code, synthetic "textbook-like" data, and chat-format supervised data; public-data cutoff June 2024; individual datasets not named. Arabic is in the card's supported-language list, but the card also says the model is trained primarily on English and other languages perform worse, so Arabic quality is unknown until benchmarked. |
-| Jais-3-3.7B (Inception42/IFM) | 5.06B (HF safetensors metadata) | Apache-2.0 | verified 2026-10-30 (card statement `license: apache-2.0`; the repo has no LICENSE file) | https://huggingface.co/inception42/Jais-3-3.7B | Arabic and English only (card). Training data **not disclosed** on the card (it points to a tech report at ifm.ai, which was not read). The transformers path needs `trust_remote_code` custom architecture code. Card also says Jais-3-0.9B (https://huggingface.co/inception42/Jais-3-0.9B) is `apache-2.0`; not counted, as only its header was read. |
-| Jais-3-3.7B-GGUF (IFM) | same | Apache-2.0 | verified 2026-10-30 (card statement `license: apache-2.0`; no LICENSE file) | https://huggingface.co/IFM/Jais-3-3.7B-GGUF | Card lists BF16 10.13 GB, Q8_0 5.39 GB, Q6_K 4.16 GB, Q5_K_M 3.64 GB; the Q4_K_M file is 3.16 GB (HTTP header). Whether llama.cpp loads it was not tested. |
+| Jais-3-3.7B (Inception42/IFM) | 5.06B (HF safetensors metadata) | Apache-2.0 | verified 2026-10-30 (card statement `license: apache-2.0`; the repo has no LICENSE file) | https://huggingface.co/inception42/Jais-3-3.7B | Arabic and English only (card). Training data **not disclosed** on the card. The card links the Jais 3 Technical Report (https://ifm.ai/jais/tech-report) and a blog post (https://ifm.ai/blog/jais3/); on 2026-10-31 both returned HTTP 403 with a Cloudflare "Just a moment" challenge page, so neither could be read and there is still no training-data statement. The transformers path needs `trust_remote_code` custom architecture code. Card also says Jais-3-0.9B (https://huggingface.co/inception42/Jais-3-0.9B) is `apache-2.0`; not counted, as only its header was read. |
+| Jais-3-3.7B-GGUF (IFM) | same | Apache-2.0 | verified 2026-10-30 (card statement `license: apache-2.0`; no LICENSE file) | https://huggingface.co/IFM/Jais-3-3.7B-GGUF | Card lists BF16 10.13 GB, Q8_0 5.39 GB, Q6_K 4.16 GB, Q5_K_M 3.64 GB; the Q4_K_M file is 3.16 GB (repository file list, 3,156,606,176 bytes). The owner ran the Q4_K_M file with llama.cpp on an RTX 3050 (see the benchmark below). |
 
 Excluded after checking: Falcon-H1-3B-Instruct, whose Hugging Face license field is `falcon-llm-license` (custom TII terms, fails rule 3). Community Arabic fine-tunes of Qwen3 (for example on featherless.ai) are not used until their training data and license are checked.
+
+## Benchmark on the RTX 3050
+
+Reported by the owner, measured on an RTX 3050 with 6 GB of GPU memory, llama.cpp and Q4_K_M files. These are the owner's figures as given; I did not run them, and the 14-tool test set and the prompts used are not in this repository. "Memory" is the measured GPU memory (the same figures are in `core/src/tiers.rs`), not the file size: the Q4_K_M files in the Hugging Face repositories are 2.50 GB (Qwen3-4B), 5.03 GB (Qwen3-8B) and 3.16 GB (Jais-3-3.7B).
+
+| Model | Memory | Average time | Tools correct | Notes |
+|-------|--------|--------------|---------------|-------|
+| Qwen3-4B | 3.7 GB | 1.3 s | 13 of 14 | |
+| Qwen3-8B | 5.8 GB | 2.6 s | 14 of 14 | |
+| Jais-3-3.7B | 4.0 GB | 10.7 s | not reported | Slowest answer hit the 120 s timeout. Best Arabic in the owner's judgement (not a `core/eval/` score). |
+
+CPU only, with other work running on the machine (so the times are noisy and not a clean comparison):
+
+| Model | Time | Notes |
+|-------|------|-------|
+| Qwen3-1.7B Q8_0 | 4.0 s | |
+| Qwen3-4B | 7.3 s | Chosen for the Lite tier. The quantization was not stated in the report. |
+
+Qwen3-1.7B Q8_0 file: the official repository `Qwen/Qwen3-1.7B-GGUF` (already listed above) contains exactly one model file, `Qwen3-1.7B-Q8_0.gguf` (1,834,426,016 bytes), plus `LICENSE`, `README.md` and `params`. The `LICENSE` is the Apache License 2.0, the card header says `license: apache-2.0`, and the repository is not gated (read 2026-10-31). Which repository the benchmarked file came from was not stated; if it was not this one, that repository needs its own license check.
+
+Owner's decision: on GPUs big enough for both, Jais writes and explains and Qwen handles commands. On a 6 GB GPU, Qwen3-8B alone. This matches the tiers in [installer.md](installer.md). It does not change rule 3 or the `core/eval/` requirement; the Lite model also stays open until the CPU benchmark is complete.
 
 ## Speech to text
 
@@ -51,7 +72,7 @@ Excluded after checking: Falcon-H1-3B-Instruct, whose Hugging Face license field
 
 | Model | Size | License | Status | Source | Training data / notes |
 |-------|------|---------|--------|--------|-----------------------|
-| SILMA TTS v1 | 150M | Code MIT, weights Apache-2.0 | verified 2026-10-30 (HF card "License" section: "Model Weights: Apache-2.0" plus header `license: apache-2.0`; GitHub `LICENSE`: MIT. The HF repo has no LICENSE file) | https://huggingface.co/silma-ai/silma-tts, https://github.com/SILMA-AI/silma-tts | Card: "pretrained from scratch using tens of thousands of hours of high-quality public and proprietary data"; datasets and their licenses are not named. Built on F5-TTS architecture (v1.1.7 code). The card's disclaimer says "By using this voice cloning ability, you agree to" consent, no-fraud, no-misinformation and disclosure rules; that is a use condition outside the license text and needs legal review under rule 3. It uses CATT and NeMo-text-processing, whose licenses were not checked. Arabic (MSA) and English. |
+| SILMA TTS v1 | 150M | Code MIT, weights Apache-2.0 | verified 2026-10-30 (HF card "License" section: "Model Weights: Apache-2.0" plus header `license: apache-2.0`; GitHub `LICENSE`: MIT. The HF repo has no LICENSE file) | https://huggingface.co/silma-ai/silma-tts, https://github.com/SILMA-AI/silma-tts | Card: "pretrained from scratch using tens of thousands of hours of high-quality public and proprietary data"; datasets and their licenses are not named. Built on F5-TTS architecture (v1.1.7 code). The card's disclaimer says "By using this voice cloning ability, you agree to" consent, no-fraud, no-misinformation and disclosure rules; that is a use condition outside the license text and needs legal review under rule 3. It uses CATT (see "Vocoder and tashkeel" below) and NeMo-text-processing, whose license was not checked. Arabic (MSA) and English. |
 
 Habibi-TTS weights, one row per checkpoint. The Hugging Face repo header says `license: cc-by-nc-sa-4.0` for the whole repo, with no LICENSE file. The card note and the GitHub README say the unified, SAU and UAE models are CC-BY-NC-SA-4.0 ("restricted by SADA and Mixat") and ALG, EGY, IRQ, MAR and MSA are Apache 2.0. The paper (https://arxiv.org/abs/2601.13802, §2.4) says every checkpoint was initialised from F5-TTS, and the F5-TTS card (https://huggingface.co/SWivid/F5-TTS) is `cc-by-nc-4.0` with Emilia training data. Whether the Apache claim holds for models derived from non-commercial weights is not settled by any source read, so the five "Apache" checkpoints are left unverified and must not be used until that is resolved with the authors or legal review.
 
@@ -71,6 +92,19 @@ Habibi training data (paper §2.2, all checkpoints together; the sources I read 
 
 Excluded: Arabic-TTS-Spark (no commercial use), nipponjo/tts_arabic (unclear license, XTTS-derived voices), phoonnx Miro (CC BY-NC-ND), XTTS (non-commercial). These exclusions come from earlier notes and were not re-read this round.
 
+## Vocoder and tashkeel
+
+Vocos turns a mel spectrogram into audio. CATT adds Arabic diacritics (tashkeel) to text before it is spoken.
+
+| Model | Size | License | Status | Source | Training data / notes |
+|-------|------|---------|--------|--------|-----------------------|
+| Vocos `charactr/vocos-mel-24khz` | 13.5M parameters (GitHub README); `pytorch_model.bin` is 54,365,991 bytes | MIT | verified 2026-10-31 (card header `license: mit`; the HF repo has no LICENSE file; GitHub `LICENSE`: MIT, copyright 2023 Charactr Inc.) | https://huggingface.co/charactr/vocos-mel-24khz, https://github.com/gemelo-ai/vocos | The card's License section says "The code in this repository is released under the MIT license"; the repository holds the weights, and the header covers it. Training data: LibriTTS, 1M iterations (GitHub README table); LibriTTS is English speech and its page at https://www.openslr.org/60/ says CC BY 4.0. The HF card itself does not name the data. Arabic quality of an English-trained vocoder is unmeasured. 24 kHz, 100 mel bands (`config.yaml`). |
+| CATT code (`abjadai/catt`) | n/a | Apache-2.0 | verified 2026-10-31 (GitHub `LICENSE`, copyright 2025 Abjad AI) | https://github.com/abjadai/catt | The `LICENSE` was CC BY-NC-SA 4.0 from 2024-07-03 and was replaced by Apache-2.0 on 2025-07-18; the README has a "License Change: CC-BY-NC to Apache 2.0" section. The PyPI package `catt-tashkeel` 1.0.2 carries the Apache classifier. |
+| CATT encoder-decoder weights (`best_ed_mlm_ns_epoch_178.pt`, 88,403,510 bytes; ONNX `ed_model_onnx.zip`) | about 88 MB | Not stated for the weights | **unverified**: the weights are assets of GitHub release v2, published 2024-07-04 while the repository was CC BY-NC-SA 4.0; the release notes give no license, and the 2025 change is described for "this repository" | https://github.com/abjadai/catt/releases/tag/v2 | Better diacritics accuracy; the README recommends it over the encoder-only model. |
+| CATT encoder-only weights (`best_eo_mlm_ns_epoch_193.pt`, 75,762,232 bytes; ONNX `eo_model_onnx.zip`) | about 76 MB | same | **unverified** (same reason) | same | Faster; the README recommends it for speed. |
+
+CATT training data (paper, https://arxiv.org/abs/2407.03236, §3): fine-tuned on the Tashkeela corpus (1,658,325 samples before filtering, 1,330,539 after), which the paper says is about 98.85% text from 97 books of the Shamela library, "an Islamic electronic library", mixing classical and Modern Standard Arabic. The Tashkeela project page on SourceForge lists GPL-2.0 for the corpus. The character-level BERT was pretrained on 18,543,025 samples "scraped from various sources, including X and online news websites"; the paper gives no licenses or site list. Noisy-Student training added 1M pseudo-labelled sentences from that scraped set. The weights therefore come from mostly classical and religious-library text plus scraped posts and news. CATT only adds diacritics and ScarfeeOS adds no religious content on top, but this training data needs legal review before the weights ship. The release's `dataset.zip` is the Tashkeela split. The CATT benchmark set (742 sentences scraped from a news site in 2023, per the paper) appears to be in the repository's `benchmarking` folder; its terms were not read.
+
 ## Training data
 
 | Dataset | License | Status | Source | Notes |
@@ -88,12 +122,16 @@ Excluded: Arabic-TTS-Spark (no commercial use), nipponjo/tts_arabic (unclear lic
 ## Open items
 - Habibi-TTS: ask the authors whether the Apache-2.0 claim for ALG, EGY, IRQ, MAR and MSA is valid given the CC-BY-NC F5-TTS initialisation, and have the training-data licenses (MGB-2, MASC, SADA and others) reviewed.
 - Cohere Transcribe Arabic: log in to Hugging Face to read the card, the gate terms and any license file, then re-check. Decide whether a gated download is acceptable.
-- SILMA: ask the authors which datasets were used; legal review of the voice-cloning disclaimer; check CATT and NeMo-text-processing licenses.
+- SILMA: ask the authors which datasets were used; legal review of the voice-cloning disclaimer; check the NeMo-text-processing license.
+- CATT weights: ask Abjad AI whether the 2025-07-18 change to Apache-2.0 covers the v2 release weights and ONNX files, and have the Tashkeela (GPL-2.0, mostly Shamela books) and scraped pretraining data reviewed.
+- Vocos: nothing blocks the license; test whether a vocoder trained on LibriTTS gives acceptable Arabic.
 - Whisper: read the per-size Hugging Face cards (tiny to turbo) to meet the per-size rule.
-- Jais-3-3.7B: read the tech report for a training-data statement; test GGUF loading in llama.cpp.
-- Measure Arabic quality and 6 GB memory fit for Qwen3 (up to 4B), Phi-4-mini-instruct and Jais-3-3.7B in the benchmark.
-- Record the training-data statement again for the chosen default once it is chosen.
+- Jais-3-3.7B: read the tech report (blocked by a Cloudflare challenge on 2026-10-31; open it in a browser or ask IFM) for a training-data statement. GGUF loading in llama.cpp is done (owner's run).
+- Run Qwen3-4B, Qwen3-8B and Jais-3-3.7B through `core/eval/` for Arabic quality; Phi-4-mini-instruct has no 6 GB measurement at all.
+- Lite tier: finish the CPU benchmark (the 7.3 s Qwen3-4B figure was taken with other work running) and confirm the quantization.
+- Qwen3-1.7B Q8_0: confirm the benchmarked file came from `Qwen/Qwen3-1.7B-GGUF`.
+- Record the training-data statement again for the chosen models: Qwen3-8B and Qwen3-4B (cards disclose none), Jais-3-3.7B (not disclosed on the card; report unread).
 - Vendored licenses inside llama.cpp and whisper.cpp for the SBOM.
 
-## Counts (2026-10-30)
-30 entries: 24 verified, 6 unverified. The 6 unverified are Cohere Transcribe Arabic and the Habibi ALG, EGY, IRQ, MAR and MSA checkpoints. Of the 24 verified, 3 (Habibi SAU, UAE, Unified) are verified as non-commercial and excluded by rule 3. Entries counted: 6 Qwen3 sizes, 6 Qwen3 GGUF repositories, Phi-4-mini-instruct, Jais-3-3.7B, Jais-3-3.7B-GGUF, Whisper, Cohere Transcribe Arabic, SILMA TTS, 8 Habibi checkpoints, Habibi code, Common Voice Arabic, whisper.cpp, llama.cpp. Own recordings and the excluded models are not counted.
+## Counts (2026-10-31)
+34 entries: 26 verified, 8 unverified. The 8 unverified are Cohere Transcribe Arabic, the Habibi ALG, EGY, IRQ, MAR and MSA checkpoints, and the two CATT weight files. Of the 26 verified, 3 (Habibi SAU, UAE, Unified) are verified as non-commercial and excluded by rule 3. Entries counted: 6 Qwen3 sizes, 6 Qwen3 GGUF repositories, Phi-4-mini-instruct, Jais-3-3.7B, Jais-3-3.7B-GGUF, Whisper, Cohere Transcribe Arabic, SILMA TTS, 8 Habibi checkpoints, Habibi code, Vocos mel-24khz, CATT code, CATT encoder-decoder weights, CATT encoder-only weights, Common Voice Arabic, whisper.cpp, llama.cpp. Own recordings and the excluded models are not counted. The benchmark tables add no entries.
