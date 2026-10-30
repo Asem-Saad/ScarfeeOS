@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use crate::datetime::Date;
 use crate::guard::{self, Issue, LiveData};
 use crate::hijri::{self, HijriDate};
-use crate::lang::Language;
+use crate::lang::{self, Language};
 use crate::provider::{LocalProvider, ModelReply, RawToolCall};
 use crate::tools::{self, Clock, ClockError, LocalTime, Resolution, ToolCall};
 
@@ -181,6 +181,15 @@ impl<'a> Assistant<'a> {
             Ok(call) => call,
             Err(e) => return Outcome::Error(e),
         };
+        let call = match call {
+            ToolCall::CreateReminder { text, time, repeat } => {
+                ToolCall::CreateReminder { text: in_user_language(text, user_text), time, repeat }
+            }
+            ToolCall::ScheduleMeeting { title, time, attendees, repeat } => {
+                ToolCall::ScheduleMeeting { title: in_user_language(title, user_text), time, attendees, repeat }
+            }
+            other => other,
+        };
         match call {
             ToolCall::CurrentTime { timezone } => self.time_outcome(timezone.as_deref()),
             ToolCall::SetLanguage { .. } => Outcome::NeedsConfirmation(call),
@@ -190,6 +199,27 @@ impl<'a> Assistant<'a> {
                 Resolution::MissingTime => Outcome::MissingTime(call),
             },
         }
+    }
+}
+
+/// A reminder text or meeting title in the language of the user's text. When
+/// the user wrote only Arabic (or only English) and the model's text has no
+/// letters in that script, the user's own words are used, without the command
+/// and the time. Otherwise only a time the model copied at the end is removed.
+fn in_user_language(model_text: String, user_text: &str) -> String {
+    if let Some(language) = lang::pure_script(user_text) {
+        if !lang::has_letters(&model_text, language) {
+            let own = lang::without_time_words(&lang::without_command_words(user_text), false);
+            if !own.is_empty() {
+                return own;
+            }
+        }
+    }
+    let stripped = lang::without_time_words(&model_text, true);
+    if stripped.is_empty() {
+        model_text
+    } else {
+        stripped
     }
 }
 
@@ -640,6 +670,82 @@ mod tests {
         let m = model(call("open_app", r#"{"name":"calculator"}"#));
         let (outcome, _) = turn(&m, "Open the calculator.", Language::English);
         assert_eq!(outcome, Outcome::Run(ToolCall::OpenApp { name: "calculator".into() }));
+    }
+
+    /// The reminder the model's `model_text` becomes for `user_text`, with its time.
+    fn reminder_for(user_text: &str, model_text: &str, language: Language) -> (String, String) {
+        let args = json!({"text": model_text, "time": "2020-01-01T00:00:00"}).to_string();
+        match turn(&model(call("create_reminder", &args)), user_text, language).0 {
+            Outcome::Run(ToolCall::CreateReminder { text, time, .. }) => (text, time),
+            other => panic!("expected a reminder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn english_reminder_for_an_arabic_request_uses_the_users_words() {
+        let (text, time) = reminder_for(
+            "ذكّرني أعمل نسخة احتياطية للابتوب كل جمعة.",
+            "perform a backup for the laptop",
+            Language::Arabic,
+        );
+        assert_eq!(text, "أعمل نسخة احتياطية للابتوب");
+        assert_eq!(time, "2026-11-06");
+        let (text, _) = reminder_for("Remind me to call the bank tomorrow at 10 am.", "اتصل بالبنك", Language::English);
+        assert_eq!(text, "call the bank");
+    }
+
+    #[test]
+    fn time_words_the_model_copied_are_removed() {
+        let (text, time) = reminder_for("عايز أفتكر أكلم المهندس بكرة الصبح.", "أكلم المهندس بكرة الصبح", Language::Arabic);
+        assert_eq!(text, "أكلم المهندس");
+        assert_eq!(time, "2026-10-31T09:00:00");
+        let (text, _) = reminder_for("Remind me to call Sam tomorrow at 10 am.", "call Sam tomorrow at 10 am", Language::English);
+        assert_eq!(text, "call Sam");
+    }
+
+    #[test]
+    fn mixed_sentences_keep_the_model_text_without_its_time() {
+        let (text, _) = reminder_for("ذكّرني أعمل backup للـ laptop كل جمعة.", "backup the laptop every Friday", Language::Arabic);
+        assert_eq!(text, "backup the laptop");
+        // The model's English is not replaced, because the request is not only Arabic.
+        let (text, _) = reminder_for("ذكّرني أعمل backup للـ laptop كل جمعة.", "perform a backup for the laptop", Language::Arabic);
+        assert_eq!(text, "perform a backup for the laptop");
+    }
+
+    #[test]
+    fn english_sentence_with_an_arabic_name_keeps_the_name() {
+        let user = "Remind me to call المهندس أحمد tomorrow at 10 am.";
+        let (text, time) = reminder_for(user, "call المهندس أحمد tomorrow at 10 am", Language::English);
+        assert_eq!(text, "call المهندس أحمد");
+        assert_eq!(time, "2026-10-31T10:00:00");
+        let (text, _) = reminder_for(user, "call Ahmad", Language::English);
+        assert_eq!(text, "call Ahmad");
+    }
+
+    #[test]
+    fn numbers_and_places_in_the_text_stay() {
+        let (text, _) = reminder_for("Remind me to check room 10 tomorrow.", "check room 10 tomorrow", Language::English);
+        assert_eq!(text, "check room 10");
+        let (text, _) = reminder_for("Remind me to look at the board at 5 pm.", "look at the board at 5 pm", Language::English);
+        assert_eq!(text, "look at the board");
+    }
+
+    #[test]
+    fn meeting_title_follows_the_users_language() {
+        let m = model(call(
+            "schedule_meeting",
+            r#"{"title":"اجتماع المشروع","time":"x","attendees":["Sara"]}"#,
+        ));
+        let (outcome, _) = turn(&m, "Schedule a meeting called Project Review with Sara on Sunday at 2 pm.", Language::English);
+        assert_eq!(
+            outcome,
+            Outcome::Run(ToolCall::ScheduleMeeting {
+                title: "Project Review with Sara".into(),
+                time: "2026-11-01T14:00:00".into(),
+                attendees: vec!["Sara".into()],
+                repeat: None,
+            })
+        );
     }
 
     #[test]

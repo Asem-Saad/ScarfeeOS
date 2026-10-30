@@ -485,8 +485,10 @@ impl JsonParser<'_> {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU32, Ordering};
+    #[cfg(unix)]
     use std::sync::Mutex;
 
     /// Output of whisper-cli v1.9.5 built from source, ggml-tiny.bin, `-l ar -oj -of - -np`,
@@ -649,6 +651,7 @@ mod tests {
 
     /// Writing and starting scripts from parallel threads can fail with
     /// "text file busy", so the tests that do it run one at a time.
+    #[cfg(unix)]
     static SCRIPT_LOCK: Mutex<()> = Mutex::new(());
     static NEXT_DIR: AtomicU32 = AtomicU32::new(0);
 
@@ -668,6 +671,8 @@ mod tests {
             path
         }
 
+        /// A `/bin/sh` script, so only where scripts can run.
+        #[cfg(unix)]
         fn script(&self, body: &str) -> PathBuf {
             let path = self.file("fake-whisper-cli", format!("#!/bin/sh\n{body}\n").as_bytes());
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -681,10 +686,12 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn sh_quote(path: &Path) -> String {
         format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
     }
 
+    #[cfg(unix)]
     #[test]
     fn fake_program_gets_an_argument_list_and_arabic_survives() {
         let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -734,6 +741,7 @@ mod tests {
         assert_eq!(err, SpeechError::AudioNotFound(no_wav));
     }
 
+    #[cfg(unix)]
     #[test]
     fn non_zero_exit_carries_the_status_and_stderr() {
         let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -748,6 +756,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn success_status_with_bad_output_is_malformed() {
         let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -762,6 +771,7 @@ mod tests {
         assert!(matches!(err, SpeechError::MalformedOutput(_)), "{err:?}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_program_that_runs_too_long_is_killed() {
         let _guard = SCRIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -801,12 +811,15 @@ mod tests {
         assert!(t.language.is_some());
         assert!(!t.segments.is_empty());
 
-        // An odd file name goes through unchanged.
-        let odd = std::env::temp_dir().join(format!("odd name; $(id) '\"' -x {}.wav", std::process::id()));
-        fs::copy(&wav, &odd).unwrap();
-        let again = cli.transcribe(&odd, SttLanguage::Auto);
-        fs::remove_file(&odd).unwrap();
-        assert_eq!(again.unwrap().text, t.text);
+        // An odd file name goes through unchanged. Windows file names cannot hold these characters.
+        #[cfg(unix)]
+        {
+            let odd = std::env::temp_dir().join(format!("odd name; $(id) '\"' -x {}.wav", std::process::id()));
+            fs::copy(&wav, &odd).unwrap();
+            let again = cli.transcribe(&odd, SttLanguage::Auto);
+            fs::remove_file(&odd).unwrap();
+            assert_eq!(again.unwrap().text, t.text);
+        }
 
         let dir = Scratch::new();
         let bad_model = dir.file("bad.bin", &[7u8; 4096]);
