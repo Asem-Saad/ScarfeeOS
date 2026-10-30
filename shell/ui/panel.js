@@ -11,6 +11,7 @@
     ].join('|'),
     'g'
   );
+  const ARABIC_LETTER = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
   const TRAILING_PUNCTUATION = /[.,;:!?)\]'"-]+$/;
 
   function segmentText(text) {
@@ -129,13 +130,28 @@
       }
     }
 
+    // One bidirectional unit per name. In a right-to-left name a Latin extension is its own left-to-right unit,
+    // so the dot stays in front of it ("report.txt" never turns into "txt.report").
+    function renderFileName(text) {
+      const name = el('bdi', 'message-file-name');
+      name.dir = 'auto';
+      const dot = text.lastIndexOf('.');
+      if (dot > 0 && ARABIC_LETTER.test(text) && /^\.[A-Za-z0-9]{1,10}$/.test(text.slice(dot))) {
+        name.append(document.createTextNode(text.slice(0, dot)));
+        const extension = el('bdi', null, text.slice(dot));
+        extension.dir = 'ltr';
+        name.append(extension);
+      } else {
+        name.append(document.createTextNode(text));
+      }
+      return name;
+    }
+
     function renderFiles(block) {
       const list = el('ul', 'message-files');
       for (const file of block.items) {
         const item = el('li', 'message-file');
-        const name = el('bdi', null, file.name);
-        name.dir = 'auto';
-        item.append(name);
+        item.append(renderFileName(file.name));
         if (file.folder) {
           const folder = el('bdi', 'message-file-folder', file.folder);
           folder.dir = 'ltr';

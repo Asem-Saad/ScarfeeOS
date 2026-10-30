@@ -322,6 +322,25 @@ test('a search shows names with their folders and the notes about what is missin
   assert.match(text, /Folders that could not be read: 3\./);
 });
 
+test('each file name is its own isolated unit on its own line, with its folder and kind after it', async () => {
+  const names = ['ميزانية 2026.txt', 'budget final 2026.txt', 'Q3 تقرير.pdf', 'ملف', '.حخ', 'ميزانية.tar.gz', 'ميزانية.'];
+  const matches = names.map((name) => ({ path: `/home/u/المستندات/${name}`, kind: 'file' }));
+  const { ids } = await loadPanel(sequence(run('search_files', { query: 'x' }, { ok: true, type: 'search', matches, truncated: false, unreadable: 0 })));
+  await ask(ids);
+  const items = ids['message-list'].all((n) => n.className === 'message-file');
+  assert.strictEqual(items.length, names.length);
+  items.forEach((li, i) => {
+    const [name, folder] = li.children;
+    assert.deepStrictEqual([name.tagName, name.className, name.dir, name.textContent], ['bdi', 'message-file-name', 'auto', names[i]]);
+    assert.deepStrictEqual([folder.tagName, folder.className, folder.dir], ['bdi', 'message-file-folder', 'ltr']);
+    assert.ok(!folder.textContent.includes(names[i]), 'the folder is a separate element from the name');
+  });
+  const extensions = items.map((li) => li.children[0].children.filter((c) => c.tagName === 'bdi').map((c) => [c.dir, c.textContent]));
+  assert.deepStrictEqual(extensions, [[['ltr', '.txt']], [], [['ltr', '.pdf']], [], [], [['ltr', '.gz']], []], 'only a Latin extension of an Arabic name is split off');
+  const css = fs.readFileSync(path.join(__dirname, 'panel.css'), 'utf8');
+  assert.match(css, /\.message-file-name\s*\{[^}]*display:\s*block/, 'the name takes its own line');
+});
+
 test('a language change from the core goes through the panel\'s language switch', async () => {
   const storage = memoryStorage();
   const { ids, posts, document } = await loadPanel(sequence(

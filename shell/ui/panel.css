@@ -232,9 +232,15 @@ body {
   overflow-wrap: anywhere;
 }
 
+.message-file-name {
+  display: block;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+}
+
 .message-file-folder,
 .message-file-kind {
-  margin-inline-start: 0.5rem;
+  margin-inline-end: 0.5rem;
   font-size: 0.8rem;
   color: var(--text-muted);
 }

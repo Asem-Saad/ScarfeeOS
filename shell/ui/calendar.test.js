@@ -448,6 +448,12 @@ test('calendar.html has no hard-coded text or plain text attributes', () => {
   assert.match(html, /<html lang="en" dir="ltr">/);
 });
 
+test('calendar.html has a back link to the assistant in its header', () => {
+  const header = html.match(/<header class="calendar-header">([\s\S]*?)<\/header>/)[1];
+  assert.ok(header.includes('<a class="button" href="index.html" data-i18n="assistant-title"></a>'));
+  assert.ok(locale('en').has('assistant-title') && locale('ar').has('assistant-title'));
+});
+
 test('every id calendar.js looks up exists in calendar.html', () => {
   const wanted = [...read('calendar.js').matchAll(/(?:byId|getElementById)\('([^']+)'\)/g)].map((m) => m[1]);
   assert.ok(wanted.length >= 10);
