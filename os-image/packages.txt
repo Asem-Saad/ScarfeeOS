@@ -34,8 +34,8 @@ wireplumber
 scarfeeos-release
 scarfeeos-repos
 scarfeeos-logos
-# Desktop session (README.md, "Desktop session")
-cage
+# Desktop session: a Wayland compositor that manages windows (README.md, "Desktop session")
+wayfire
 webkit2gtk4.1
 # Languages
 glibc-langpack-en

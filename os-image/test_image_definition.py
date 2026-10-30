@@ -366,7 +366,12 @@ class ImageDefinition(unittest.TestCase):
 
     def test_desktop_session_packages(self):
         installed = set(self.config["image"])
-        self.assertTrue({"cage", "webkit2gtk4.1"} <= installed)
+        # a compositor that manages windows (docs/design.md shows several windows and a taskbar), and the web view Tauri uses
+        self.assertTrue({"wayfire", "webkit2gtk4.1"} <= installed)
+        # a single-window kiosk compositor cannot show the taskbar and windows side by side
+        self.assertTrue(installed.isdisjoint({"cage", "gnome-kiosk"}))
+        # exactly one compositor, and no X server (README.md, "Desktop session")
+        self.assertTrue(installed.isdisjoint({"sway", "labwc", "weston", "niri", "river", "mutter", "xorg-x11-server-Xwayland"}))
         # a display manager or a full GNOME/KDE session is a different decision (README.md, "Desktop session")
         for name in installed:
             self.assertFalse(name.startswith(("gdm", "sddm", "gnome-", "plasma-", "kwin", "lightdm")), name)

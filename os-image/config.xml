@@ -66,8 +66,8 @@
     <package name="scarfeeos-release"/>
     <package name="scarfeeos-repos"/>
     <package name="scarfeeos-logos"/>
-    <!-- Desktop session: a Wayland kiosk compositor, and the web view the Tauri shell needs (README.md, "Desktop session") -->
-    <package name="cage"/>
+    <!-- Desktop session: a Wayland compositor that manages windows, and the web view the Tauri shell needs (README.md, "Desktop session") -->
+    <package name="wayfire"/>
     <package name="webkit2gtk4.1"/>
     <!-- Languages: both stay installed -->
     <package name="glibc-langpack-en"/>
