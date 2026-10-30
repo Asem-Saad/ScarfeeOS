@@ -601,7 +601,9 @@ mod tests {
         assert_eq!(r["ok"], false, "{r}");
         assert!(matches!(r["error"]["code"].as_str(), Some("outside_root" | "not_found")), "{r}");
         assert!(!r["error"]["message"].as_str().unwrap().is_empty());
-        let r = env.executor.run(&ToolCall::ListFiles { path: "/etc".into() });
+        // A real folder above the root; "/etc" is not an absolute path on Windows.
+        let outside = env.tmp.0.display().to_string();
+        let r = env.executor.run(&ToolCall::ListFiles { path: outside });
         assert_eq!(r["error"]["code"], "outside_root", "{r}");
         let r = env.executor.run(&ToolCall::SearchFiles { query: "  ".into() });
         assert_eq!(r["error"]["code"], "empty_query", "{r}");
@@ -792,6 +794,8 @@ mod tests {
         assert!(env.executor.delete_event("nope").is_err());
     }
 
+    // The XDG rules are Unix: "/home/u" and ":" separated lists are not absolute paths or separators on Windows.
+    #[cfg(unix)]
     #[test]
     fn paths_follow_the_xdg_rules() {
         let home = Path::new("/home/u");

@@ -263,14 +263,19 @@ fn tool_body(kind: &str, call: &ToolCall) -> Value {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    #[cfg(unix)]
     use std::rc::Rc;
 
     use super::*;
     use crate::assistant::Model;
     use crate::datetime::Date;
-    use crate::actions::{App, Launcher, LaunchError};
-    use crate::executor::testing::{app, Env, FakeLauncher};
-    use crate::executor::CommandLauncher;
+    use crate::executor::testing::Env;
+    #[cfg(unix)]
+    use crate::{
+        actions::{App, LaunchError, Launcher},
+        executor::testing::{app, FakeLauncher},
+        executor::CommandLauncher,
+    };
     use crate::provider::{ModelReply, RawToolCall};
     use crate::tools::{FixedClock, LocalTime};
 
@@ -678,8 +683,11 @@ mod tests {
         assert_eq!(r["result"]["ok"], false);
         assert_eq!(r["result"]["error"]["code"], "app_not_found");
         assert_eq!(r["result"]["error"]["closest"], json!(["Calculator"]));
-        let m = model(call("list_files", r#"{"path":"/etc"}"#));
-        let r = ask(&m, &req("List /etc"));
+        // A real folder above the root; "/etc" is not an absolute path on Windows.
+        let mut env = Env::new();
+        let outside = env.tmp.0.display().to_string();
+        let m = model(call("list_files", &json!({"path": outside}).to_string()));
+        let r = ask_in(&m, &mut env, &req("List the folder above"));
         assert_eq!((&r["result"]["ok"], &r["result"]["error"]["code"]), (&json!(false), &json!("outside_root")), "{r}");
     }
 
@@ -717,8 +725,10 @@ mod tests {
     }
 
     /// Counts launches and starts the real program.
+    #[cfg(unix)]
     struct CountingCommand(Rc<Cell<u32>>);
 
+    #[cfg(unix)]
     impl Launcher for CountingCommand {
         fn launch(&self, app: &App) -> Result<(), LaunchError> {
             self.0.set(self.0.get() + 1);
@@ -726,6 +736,8 @@ mod tests {
         }
     }
 
+    // Needs a POSIX shell, `touch` and `printf` to prove that no shell sits in between.
+    #[cfg(unix)]
     #[test]
     fn model_text_cannot_reach_command() {
         let tmp_probe = Env::new();
