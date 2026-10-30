@@ -10,6 +10,8 @@
 //! - `upcoming` (true, with `from` as YYYY-MM-DD, default today): the events
 //!   from that day on, soonest first.
 //! - `delete_event`: the UID of an event to remove from the calendar.
+//! - `hardware` (true): what this machine has, the tier the installer
+//!   recommends and the model plans (see `hardware_body`).
 //!
 //! Response: {"id": 1, "kind": "...", ...}. A request that cannot be read gets
 //! {"id": <the id if it had one, else null>, "kind": "error", "message": "..."}.
@@ -31,7 +33,9 @@ use serde_json::{json, Map, Value};
 use crate::assistant::{Assistant, Outcome};
 use crate::executor::{repeat_name, Executor, Held};
 use crate::guard::LiveData;
+use crate::hardware::{self, Hardware, Tier};
 use crate::lang::Language;
+use crate::tiers::{self, ModelPlan, ModelSpec};
 use crate::tools::ToolCall;
 
 /// Answers every line of `input` with one line on `output`, until end of input.
@@ -74,7 +78,7 @@ pub fn handle_line(assistant: &Assistant, executor: &mut Executor, line: &str) -
     };
     let present: Vec<&str> = ACTIONS.iter().copied().filter(|key| request.contains_key(*key)).collect();
     let [action] = present[..] else {
-        return error_response(id, "request must have exactly one of `text`, `confirm`, `cancel`, `upcoming`, `delete_event`");
+        return error_response(id, "request must have exactly one of `text`, `confirm`, `cancel`, `upcoming`, `delete_event`, `hardware`");
     };
     let string = |key: &str| match request.get(key) {
         Some(Value::String(s)) => Ok(Some(s.as_str())),
@@ -97,6 +101,8 @@ pub fn handle_line(assistant: &Assistant, executor: &mut Executor, line: &str) -
             events["kind"] = json!("events");
             events
         }),
+        "hardware" if request["hardware"] != json!(true) => Err("`hardware` must be true".into()),
+        "hardware" => Ok(hardware_body(&hardware::detect())),
         _ => match string("delete_event") {
             Ok(Some(uid)) if !uid.is_empty() => {
                 executor.delete_event(uid).map(|()| json!({"kind": "event_deleted", "uid": uid}))
@@ -114,7 +120,46 @@ pub fn handle_line(assistant: &Assistant, executor: &mut Executor, line: &str) -
     }
 }
 
-const ACTIONS: [&str; 5] = ["text", "confirm", "cancel", "upcoming", "delete_event"];
+const ACTIONS: [&str; 6] = ["text", "confirm", "cancel", "upcoming", "delete_event", "hardware"];
+
+fn tier_name(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Lite => "lite",
+        Tier::Full => "full",
+        Tier::Dual => "dual",
+    }
+}
+
+fn model_body(model: &ModelSpec) -> Value {
+    json!({"name": model.name, "memory_mib": model.memory_mib, "measured": model.measured})
+}
+
+fn plan_body(plan: &ModelPlan) -> Value {
+    json!({
+        "tier": tier_name(plan.tier),
+        "command": model_body(&plan.command),
+        "writer": plan.writer.as_ref().map(model_body),
+        "gpu_layers": plan.gpu_layers,
+    })
+}
+
+/// The `hardware` response: what was detected (`ram_kib` and `gpu` are null when unknown), the recommended
+/// tier with the core's reason (English, for logs), the `plan` for that tier and a plan for each tier, so
+/// the installer can show every choice. Nothing here blocks a tier: the installer only warns.
+fn hardware_body(hw: &Hardware) -> Value {
+    let gpu_memory_mib = hw.gpu.as_ref().map(|g| g.memory_mib);
+    let recommendation = hardware::recommend_tier(hw);
+    let plan = |tier| plan_body(&tiers::plan_for(tier, gpu_memory_mib));
+    json!({
+        "kind": "hardware",
+        "ram_kib": hw.ram_kib,
+        "cpu": {"avx2": hw.cpu.avx2, "avx512f": hw.cpu.avx512f},
+        "gpu": hw.gpu.as_ref().map(|g| json!({"name": g.name, "memory_mib": g.memory_mib})),
+        "recommended": {"tier": tier_name(recommendation.tier), "reason": recommendation.reason},
+        "plan": plan(recommendation.tier),
+        "plans": {"lite": plan(Tier::Lite), "full": plan(Tier::Full), "dual": plan(Tier::Dual)},
+    })
+}
 
 fn handle_text(assistant: &Assistant, executor: &mut Executor, id: Value, request: &Map<String, Value>) -> Value {
     let Some(Value::String(text)) = request.get("text") else {
@@ -737,5 +782,72 @@ mod tests {
         }
         assert_eq!(written.lines().collect::<Vec<_>>(), literal.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(!pwned.exists());
+    }
+
+    fn hardware_with(gpu_mib: Option<u64>) -> Hardware {
+        use crate::hardware::{CpuFlags, Gpu};
+        Hardware {
+            ram_kib: Some(16_384_000),
+            cpu: CpuFlags { avx2: true, avx512f: false },
+            gpu: gpu_mib.map(|memory_mib| Gpu { name: "Test GPU".into(), memory_mib }),
+        }
+    }
+
+    #[test]
+    fn hardware_body_for_a_big_gpu_recommends_dual_with_the_large_pair() {
+        let r = hardware_body(&hardware_with(Some(12 * 1024)));
+        assert_eq!(r["kind"], "hardware");
+        assert_eq!(r["ram_kib"], 16_384_000);
+        assert_eq!(r["cpu"], json!({"avx2": true, "avx512f": false}));
+        assert_eq!(r["gpu"], json!({"name": "Test GPU", "memory_mib": 12288}));
+        assert_eq!(r["recommended"]["tier"], "dual");
+        assert!(r["recommended"]["reason"].as_str().unwrap().contains("Test GPU"));
+        assert_eq!(r["plan"], r["plans"]["dual"]);
+        assert_eq!(r["plan"]["command"], json!({"name": "Qwen3-8B", "memory_mib": 5939, "measured": true}));
+        assert_eq!(r["plan"]["writer"], json!({"name": "Jais-3-3.7B", "memory_mib": 4096, "measured": true}));
+        assert_eq!(r["plan"]["gpu_layers"], 999);
+    }
+
+    #[test]
+    fn hardware_body_without_a_gpu_recommends_lite_but_plans_every_tier() {
+        let r = hardware_body(&Hardware::default());
+        assert_eq!(r["ram_kib"], Value::Null);
+        assert_eq!(r["gpu"], Value::Null);
+        assert_eq!(r["recommended"]["tier"], "lite");
+        assert_eq!(r["plan"], r["plans"]["lite"]);
+        assert_eq!(r["plan"], json!({
+            "tier": "lite",
+            "command": {"name": "Qwen3-4B", "memory_mib": 3789, "measured": false},
+            "writer": null,
+            "gpu_layers": 0,
+        }));
+        assert_eq!(r["plans"]["full"]["command"]["name"], "Qwen3-8B");
+        assert_eq!(r["plans"]["dual"]["command"]["name"], "Qwen3-4B");
+        assert_eq!(r["plans"]["dual"]["writer"]["name"], "Jais-3-3.7B");
+    }
+
+    #[test]
+    fn hardware_request_answers_with_the_detected_machine() {
+        let m = model(Err("must not be called".into()));
+        let r = ask(&m, &json!({"id": 9, "hardware": true}));
+        assert_eq!((&r["id"], &r["kind"]), (&json!(9), &json!("hardware")), "{r}");
+        let tier = r["recommended"]["tier"].as_str().unwrap();
+        assert!(["lite", "full", "dual"].contains(&tier));
+        assert_eq!(r["plan"]["tier"], tier);
+        assert_eq!(m.calls.get(), 0);
+    }
+
+    #[test]
+    fn hardware_must_be_true_and_stand_alone() {
+        let m = model(Err("must not be called".into()));
+        for request in [
+            json!({"id": 1, "hardware": false}),
+            json!({"id": 1, "hardware": "yes"}),
+            json!({"id": 1, "hardware": true, "upcoming": true}),
+            json!({"id": 1, "hardware": true, "text": "hi", "language": "en"}),
+        ] {
+            let r = ask(&m, &request);
+            assert_eq!((&r["id"], &r["kind"]), (&json!(1), &json!("error")), "{request}: {r}");
+        }
     }
 }
