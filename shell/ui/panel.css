@@ -1,0 +1,205 @@
+/* Logical properties only: the layout mirrors from the `dir` attribute on the root element. */
+:root {
+  --surface: #ffffff;
+  --surface-muted: #f1f3f6;
+  --border: #d3d8e0;
+  --text: #1c2330;
+  --text-muted: #5a6577;
+  --accent: #2a5db0;
+  --accent-text: #ffffff;
+  --user-bubble: #dde8fa;
+  font-family: system-ui, "Noto Sans", "Noto Sans Arabic", "Noto Naskh Arabic", "IBM Plex Arabic", "DejaVu Sans", sans-serif;
+  color: var(--text);
+  background: var(--surface);
+}
+
+:root:lang(ar) {
+  font-family: system-ui, "Noto Naskh Arabic", "Noto Sans Arabic", "IBM Plex Arabic", "Noto Sans", "DejaVu Sans", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  block-size: 100vh;
+}
+
+.panel {
+  display: grid;
+  grid-template-columns: 16rem 1fr;
+  block-size: 100%;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--surface-muted);
+  border-inline-end: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.sidebar-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.sidebar-title,
+.chat-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conversation-item {
+  inline-size: 100%;
+  padding-block: 0.5rem;
+  padding-inline: 0.75rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.conversation-item[aria-current="true"] {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-block-end: 1px solid var(--border);
+}
+
+.language {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-muted);
+}
+
+.language select {
+  padding-block: 0.25rem;
+  padding-inline: 0.5rem;
+  font: inherit;
+}
+
+.message-list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 1rem;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.message {
+  max-inline-size: 36rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  border-start-start-radius: 0.125rem;
+}
+
+.message-user {
+  margin-inline-start: auto;
+  background: var(--user-bubble);
+  border-color: transparent;
+  border-start-start-radius: 0.75rem;
+  border-start-end-radius: 0.125rem;
+}
+
+.message-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-block-end: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.stub-badge {
+  padding-block: 0.0625rem;
+  padding-inline: 0.5rem;
+  border: 1px dashed var(--text-muted);
+  border-radius: 999px;
+}
+
+.message-text {
+  margin: 0;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: start;
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-block-start: 1px solid var(--border);
+}
+
+.composer-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  font: inherit;
+  text-align: start;
+  resize: block;
+}
+
+.button {
+  padding-block: 0.5rem;
+  padding-inline: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

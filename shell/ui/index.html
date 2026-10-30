@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="assistant-title"></title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="panel">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2 class="sidebar-title" data-i18n="assistant-conversations"></h2>
+        <button type="button" id="new-conversation" class="button" data-i18n="assistant-new-conversation"></button>
+      </div>
+      <ul id="conversation-list" class="conversation-list" data-i18n-aria-label="assistant-conversations"></ul>
+    </aside>
+    <main class="chat">
+      <header class="chat-header">
+        <h1 class="chat-title" data-i18n="assistant-title"></h1>
+        <label class="language">
+          <span data-i18n="assistant-language-label"></span>
+          <select id="language">
+            <option value="en" data-i18n="language-english"></option>
+            <option value="ar" data-i18n="language-arabic"></option>
+          </select>
+        </label>
+      </header>
+      <ol id="message-list" class="message-list" data-i18n-aria-label="assistant-messages-label" aria-live="polite"></ol>
+      <form id="composer" class="composer">
+        <textarea id="message-input" class="composer-input" dir="auto" rows="2"
+          data-i18n-aria-label="assistant-message-label"
+          data-i18n-placeholder="assistant-message-placeholder"></textarea>
+        <button type="submit" class="button button-primary" data-i18n="assistant-send"></button>
+      </form>
+    </main>
+  </div>
+  <script src="i18n.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>
