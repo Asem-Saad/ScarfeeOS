@@ -42,7 +42,7 @@
 {"id":"writing-003","category":"writing","lang":"ar","prompt":"لخّص هذه الجملة في كلمات قليلة: اجتمع الفريق صباح اليوم لمناقشة تأخر المشروع واتفق على تمديد الموعد النهائي أسبوعين.","expect":"Brief Arabic summary: team agreed to extend the deadline two weeks."}
 {"id":"writing-004","category":"writing","lang":"en","prompt":"Translate to Arabic: The meeting has been moved to Monday morning.","expect":"تم نقل الاجتماع إلى صباح يوم الاثنين (or equivalent, correct grammar)."}
 {"id":"writing-005","category":"writing","lang":"ar","prompt":"ترجم إلى الإنجليزية: سنرسل لك الفاتورة خلال يومي عمل.","expect":"We will send you the invoice within two business days (or equivalent)."}
-{"id":"format-001","category":"format","lang":"ar","prompt":"اكتب الرقم 1234 بالأرقام العربية الشرقية.","expect":"١٢٣٤"}
+{"id":"format-001","category":"format","lang":"ar","prompt":"اكتب الرقم 1234 بالأرقام الهندية.","expect":"١٢٣٤"}
 {"id":"format-002","category":"format","lang":"en","prompt":"Write the number ٢٠٢٦ using Western digits.","expect":"2026"}
 {"id":"format-003","category":"format","lang":"ar","prompt":"ما التاريخ الهجري الذي يقابل 1 يناير 2026 ميلادي تقريبًا؟","expect":"Around 12 Rajab 1447; model should say approximately or admit uncertainty rather than state a wrong exact date."}
 {"id":"format-004","category":"format","lang":"ar","prompt":"أعطني قائمة من ثلاث نقاط عن فوائد النوم الجيد.","expect":"Three points, Arabic, list renders correctly right-to-left."}
