@@ -200,10 +200,11 @@ impl<'a> Assistant<'a> {
         };
         let call = match call {
             ToolCall::CreateReminder { text, time, repeat } => {
-                ToolCall::CreateReminder { text: in_user_language(text, user_text), time, repeat }
+                ToolCall::CreateReminder { text: reminder_text(text, user_text), time, repeat }
             }
-            ToolCall::ScheduleMeeting { title, time, attendees, repeat } => {
-                ToolCall::ScheduleMeeting { title: in_user_language(title, user_text), time, attendees, repeat }
+            ToolCall::ScheduleMeeting { time, attendees, repeat, .. } => {
+                let (title, attendees) = lang::meeting_from_user_text(user_text, &attendees);
+                ToolCall::ScheduleMeeting { title, time, attendees, repeat }
             }
             other => other,
         };
@@ -219,18 +220,14 @@ impl<'a> Assistant<'a> {
     }
 }
 
-/// A reminder text or meeting title in the language of the user's text. When
-/// the user wrote only Arabic (or only English) and the model's text has no
-/// letters in that script, the user's own words are used, without the command
-/// and the time. Otherwise only a time the model copied at the end is removed.
-fn in_user_language(model_text: String, user_text: &str) -> String {
-    if let Some(language) = lang::pure_script(user_text) {
-        if !lang::has_letters(&model_text, language) {
-            let own = lang::without_time_words(&lang::without_command_words(user_text), false);
-            if !own.is_empty() {
-                return own;
-            }
-        }
+/// The reminder text: the user's own words without the command and the time,
+/// so the model's wording, which can change the meaning, never reaches the
+/// reminder. Only when nothing is left is the model's text used, without a
+/// time it copied at the end.
+fn reminder_text(model_text: String, user_text: &str) -> String {
+    let own = lang::without_command_and_time(user_text);
+    if !own.is_empty() {
+        return own;
     }
     let stripped = lang::without_time_words(&model_text, true);
     if stripped.is_empty() {
@@ -792,6 +789,7 @@ mod tests {
         );
         assert_eq!(text, "أعمل نسخة احتياطية للابتوب");
         assert_eq!(time, "2026-11-06");
+        // A model text in another language is ignored too.
         let (text, _) = reminder_for("Remind me to call the bank tomorrow at 10 am.", "اتصل بالبنك", Language::English);
         assert_eq!(text, "call the bank");
     }
@@ -806,12 +804,49 @@ mod tests {
     }
 
     #[test]
-    fn mixed_sentences_keep_the_model_text_without_its_time() {
-        let (text, _) = reminder_for("ذكّرني أعمل backup للـ laptop كل جمعة.", "backup the laptop every Friday", Language::Arabic);
-        assert_eq!(text, "backup the laptop");
-        // The model's English is not replaced, because the request is not only Arabic.
-        let (text, _) = reminder_for("ذكّرني أعمل backup للـ laptop كل جمعة.", "perform a backup for the laptop", Language::Arabic);
-        assert_eq!(text, "perform a backup for the laptop");
+    fn mixed_sentences_keep_the_users_words_not_the_models() {
+        for model_text in ["backup the laptop every Friday", "perform a backup for the laptop"] {
+            let (text, _) = reminder_for("ذكّرني أعمل backup للـ laptop كل جمعة.", model_text, Language::Arabic);
+            assert_eq!(text, "أعمل backup للـ laptop", "{model_text}");
+        }
+    }
+
+    #[test]
+    fn a_wrong_model_text_never_changes_the_reminder() {
+        // The model turned "to call the engineer" into "to eat with the engineer".
+        let user = "عايز أفتكر أكلم المهندس بكرة الصبح";
+        for model_text in ["أكّل مع المهندس", "أكل مع المهندس بكرة الصبح", "buy milk", ""] {
+            let (text, time) = reminder_for(user, model_text, Language::Arabic);
+            assert_eq!(text, "أكلم المهندس", "{model_text:?}");
+            assert_eq!(time, "2026-10-31T09:00:00", "{model_text:?}");
+        }
+    }
+
+    #[test]
+    fn reminders_in_every_dialect_use_only_the_users_words() {
+        for (user, language, expected) in [
+            ("ذكرني أكلم المهندس بكرة الصبح", Language::Arabic, "أكلم المهندس"),
+            ("بكرة الصبح فكرني أكلم المهندس", Language::Arabic, "أكلم المهندس"),
+            ("ممكن تفكرني أكلم المهندس بكرة الصبح", Language::Arabic, "أكلم المهندس"),
+            ("عاوز افتكر أكلم المهندس انهارده الساعة 5 العصر", Language::Arabic, "أكلم المهندس"),
+            ("ابي تذكرني اكلم المهندس باجر الصبح", Language::Arabic, "اكلم المهندس"),
+            ("ابغى افتكر اكلم المهندس باكر الصبح", Language::Arabic, "اكلم المهندس"),
+            ("بدي افتكر اتصل بالمهندس بكرا الصبح", Language::Arabic, "اتصل بالمهندس"),
+            ("نبهني اتصل بالمهندس بكرا الساعة 9 الصبح", Language::Arabic, "اتصل بالمهندس"),
+            ("Please remind me to call the engineer tomorrow morning", Language::English, "call the engineer"),
+            ("Can you set a reminder to call the engineer tomorrow at 9 am", Language::English, "call the engineer"),
+            ("I need to remember to call the engineer the day after tomorrow", Language::English, "call the engineer"),
+        ] {
+            let (text, _) = reminder_for(user, "unrelated words the user never said", language);
+            assert_eq!(text, expected, "{user}");
+        }
+    }
+
+    #[test]
+    fn the_model_text_is_used_only_when_nothing_of_the_users_remains() {
+        let (text, time) = reminder_for("ذكرني بكرة الساعة 5 العصر", "اتصل بالبنك بكرة", Language::Arabic);
+        assert_eq!(text, "اتصل بالبنك");
+        assert_eq!(time, "2026-10-31T17:00:00");
     }
 
     #[test]
@@ -821,7 +856,7 @@ mod tests {
         assert_eq!(text, "call المهندس أحمد");
         assert_eq!(time, "2026-10-31T10:00:00");
         let (text, _) = reminder_for(user, "call Ahmad", Language::English);
-        assert_eq!(text, "call Ahmad");
+        assert_eq!(text, "call المهندس أحمد");
     }
 
     #[test]
@@ -832,22 +867,84 @@ mod tests {
         assert_eq!(text, "look at the board");
     }
 
+    /// The meeting the model's `title` and `attendees` become for `user_text`.
+    fn meeting_for(user_text: &str, title: &str, attendees: &[&str]) -> (String, Vec<String>, String) {
+        let args = json!({"title": title, "time": "x", "attendees": attendees}).to_string();
+        match turn(&model(call("schedule_meeting", &args)), user_text, Language::English).0 {
+            Outcome::Run(ToolCall::ScheduleMeeting { title, attendees, time, .. })
+            | Outcome::NeedsClarification(ToolCall::ScheduleMeeting { title, attendees, time, .. }) => (title, attendees, time),
+            other => panic!("expected a meeting, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn meeting_title_follows_the_users_language() {
-        let m = model(call(
-            "schedule_meeting",
-            r#"{"title":"اجتماع المشروع","time":"x","attendees":["Sara"]}"#,
-        ));
-        let (outcome, _) = turn(&m, "Schedule a meeting called Project Review with Sara on Sunday at 2 pm.", Language::English);
-        assert_eq!(
-            outcome,
-            Outcome::Run(ToolCall::ScheduleMeeting {
-                title: "Project Review with Sara".into(),
-                time: "2026-11-01T14:00:00".into(),
-                attendees: vec!["Sara".into()],
-                repeat: None,
-            })
+    fn a_title_the_user_names_is_used_exactly() {
+        for (user, expected) in [
+            ("Schedule a meeting called Project Review with Sara on Sunday at 2 pm.", "Project Review"),
+            ("Set up a meeting named Q4 Budget tomorrow at 10 am", "Q4 Budget"),
+            ("Schedule a meeting called \"Review with the board\" on Sunday at 2 pm", "Review with the board"),
+            ("حدّد اجتماعًا باسم مراجعة المشروع مع سارة وعمر يوم الأحد الساعة الثانية ظهرًا.", "مراجعة المشروع"),
+            ("اعمل اجتماع بعنوان «خطة التسويق» بكرة الساعة 3 العصر", "خطة التسويق"),
+        ] {
+            let (title, _, _) = meeting_for(user, "Wrong model title", &["Sara", "سارة", "عمر"]);
+            assert_eq!(title, expected, "{user}");
+        }
+        let (title, attendees, time) = meeting_for(
+            "حدّد اجتماعًا باسم مراجعة المشروع مع سارة وعمر يوم الأحد الساعة الثانية ظهرًا.",
+            "meeting مع الفريق",
+            &["سارة", "عمر", "ليلى"],
         );
+        assert_eq!((title.as_str(), time.as_str()), ("مراجعة المشروع", "2026-11-01T14:00:00"));
+        assert_eq!(attendees, ["سارة", "عمر"]);
+    }
+
+    #[test]
+    fn a_person_named_in_the_request_is_not_taken_as_the_title() {
+        let (title, attendees, _) = meeting_for("Schedule a meeting with a colleague named Bob tomorrow at 10 am", "x", &["Bob"]);
+        assert_eq!(title, "Meeting with a colleague named Bob");
+        assert_eq!(attendees, ["Bob"]);
+    }
+
+    #[test]
+    fn without_a_named_title_the_default_is_short_and_built_from_the_users_words() {
+        for (user, expected) in [
+            ("Schedule a meeting with Sara tomorrow at 3 pm", "Meeting with Sara"),
+            ("Schedule a meeting tomorrow at 3 pm", "Meeting"),
+            ("Schedule a team meeting with Sara tomorrow at 3 pm", "team meeting with Sara"),
+            ("حدد اجتماع مع الفريق بكرة الساعة 3 العصر", "اجتماع مع الفريق"),
+            ("اعمل اجتماع بكرة الساعة 3 العصر", "اجتماع"),
+            ("ابي اسوي اجتماع مع الفريق باجر الصبح", "اجتماع مع الفريق"),
+            ("بدي اعمل اجتماع مع الفريق بكرا الصبح", "اجتماع مع الفريق"),
+            ("ممكن تعمل schedule لـ meeting مع الـ team يوم الخميس الساعة 11؟", "اجتماع مع الـ team"),
+            (
+                "Schedule a meeting to discuss the quarterly budget forecast with the whole finance team tomorrow",
+                "discuss the quarterly budget forecast",
+            ),
+        ] {
+            // The mixed title the model made up is never used.
+            let (title, _, _) = meeting_for(user, "meeting مع الفريق", &[]);
+            assert_eq!(title, expected, "{user}");
+        }
+    }
+
+    #[test]
+    fn the_default_title_stops_before_a_named_attendee() {
+        let (title, attendees, _) = meeting_for("Schedule a team meeting with Sara tomorrow at 3 pm", "x", &["Sara"]);
+        assert_eq!((title.as_str(), attendees.as_slice()), ("team meeting", ["Sara".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn attendees_must_be_in_the_users_text() {
+        let (_, attendees, _) = meeting_for(
+            "Schedule a meeting called Review with Sara and Omar on Sunday at 2 pm.",
+            "Review",
+            &["sara", "Omar Khaled", "Layla", "Omar"],
+        );
+        assert_eq!(attendees, ["Sara", "Omar"]);
+        let (_, attendees, _) = meeting_for("اعمل اجتماع مع المهندس أحمد ولسارة بكرة الساعة 3 العصر", "x", &["أحمد", "سارة", "علي"]);
+        assert_eq!(attendees, ["أحمد", "سارة"]);
+        let (_, attendees, _) = meeting_for("Schedule a meeting tomorrow at 3 pm", "x", &["Sara"]);
+        assert!(attendees.is_empty());
     }
 
     #[test]
