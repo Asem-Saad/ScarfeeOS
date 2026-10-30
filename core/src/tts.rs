@@ -277,6 +277,7 @@ impl TempDir {
             NEXT_TEMP.fetch_add(1, Ordering::SeqCst)
         ));
         // Fails if the name exists, so another user cannot pre-create it.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = DirBuilder::new();
         #[cfg(unix)]
         builder.mode(0o700);
