@@ -8,6 +8,10 @@
   --accent: #2a5db0;
   --accent-text: #ffffff;
   --user-bubble: #dde8fa;
+  --warning: #b26a00;
+  --warning-bg: #fff3dc;
+  --error: #b3261e;
+  --error-bg: #fde8e6;
   font-family: system-ui, "Noto Sans", "Noto Sans Arabic", "Noto Naskh Arabic", "IBM Plex Arabic", "DejaVu Sans", sans-serif;
   color: var(--text);
   background: var(--surface);
@@ -149,19 +153,46 @@ body {
   color: var(--text-muted);
 }
 
-.stub-badge {
-  padding-block: 0.0625rem;
-  padding-inline: 0.5rem;
-  border: 1px dashed var(--text-muted);
-  border-radius: 999px;
-}
-
 .message-text {
   margin: 0;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   text-align: start;
+}
+
+.message-info,
+.message-question {
+  font-weight: 500;
+}
+
+.message-warning,
+.message-error {
+  margin-block-start: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  border-inline-start: 4px solid var(--warning);
+  border-radius: 0.25rem;
+  background: var(--warning-bg);
+}
+
+.message-error {
+  border-inline-start-color: var(--error);
+  background: var(--error-bg);
+}
+
+.message-warning::before {
+  content: "\26A0\FE0F ";
+}
+
+.message-note,
+.message-elapsed {
+  margin-block-start: 0.375rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.message-waiting {
+  font-style: italic;
 }
 
 .composer {
@@ -191,6 +222,11 @@ body {
   color: inherit;
   font: inherit;
   cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .button-primary {

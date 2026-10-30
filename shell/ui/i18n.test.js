@@ -113,13 +113,13 @@ test('both locale files define the same keys', () => {
   assert.deepStrictEqual([...locale('en').keys()].sort(), [...locale('ar').keys()].sort());
 });
 
-test('every key used in index.html and panel.js exists in both locale files', () => {
+test('every key used in index.html, panel.js and render.js exists in both locale files', () => {
   const html = read('index.html');
-  const js = read('panel.js');
+  const js = read('panel.js') + read('render.js');
   const used = new Set();
   for (const [, key] of html.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)) used.add(key);
   for (const [, key] of js.matchAll(/\bt\(\s*['"]([^'"]+)['"]\s*\)/g)) used.add(key);
-  assert.ok(used.size >= 15, `expected to find the panel's keys, found ${used.size}`);
+  assert.ok(used.size >= 50, `expected to find the panel's keys, found ${used.size}`);
   for (const lang of ['en', 'ar']) {
     const messages = locale(lang);
     for (const key of used) {
@@ -128,8 +128,8 @@ test('every key used in index.html and panel.js exists in both locale files', ()
   }
 });
 
-test('panel.js has no t() call with a non-literal key', () => {
-  const calls = read('panel.js').match(/\bt\(\s*[^'"\s)]/g) || [];
+test('panel.js and render.js have no t() call with a non-literal key', () => {
+  const calls = (read('panel.js') + read('render.js')).match(/\bt\(\s*[^'"\s)]/g) || [];
   assert.deepStrictEqual(calls, []);
 });
 

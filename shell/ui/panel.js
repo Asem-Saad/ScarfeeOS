@@ -45,10 +45,15 @@
     const messageList = document.getElementById('message-list');
     const input = document.getElementById('message-input');
     const languageSelect = document.getElementById('language');
+    const sendButton = document.querySelector('#composer button[type="submit"]');
+    const { describeResponse, fill, formatElapsed, responseFromHttp } = ScarfeeRender;
 
     let nextId = 1;
     const conversations = [];
     let active = null;
+    let waiting = false;
+    let elapsedNode = null;
+    let elapsedTimer = null;
 
     function el(tag, className, text) {
       const node = document.createElement(tag);
@@ -102,30 +107,55 @@
       }
     }
 
-    function renderMessage(isUser, text) {
+    function waitingSeconds(message) {
+      return (Date.now() - message.startedAt) / 1000;
+    }
+
+    function updateElapsed(message) {
+      if (elapsedNode) {
+        elapsedNode.textContent = fill(t('assistant-waiting-elapsed'), {
+          time: formatElapsed(waitingSeconds(message)),
+        });
+      }
+    }
+
+    function renderMessage(isUser, blocks, pendingMessage) {
       const item = el('li', isUser ? 'message message-user' : 'message message-assistant');
       const meta = el('div', 'message-meta');
-      const role = isUser ? t('assistant-role-user') : t('assistant-role-assistant');
-      meta.append(el('span', null, role));
-      if (!isUser) {
-        meta.append(el('span', 'stub-badge', t('assistant-stub-badge')));
+      meta.append(el('span', null, isUser ? t('assistant-role-user') : t('assistant-role-assistant')));
+      item.append(meta);
+      for (const block of blocks) {
+        const body = el('p', `message-text message-${block.tone}`);
+        body.dir = 'auto';
+        renderText(body, block.text);
+        item.append(body);
       }
-      const body = el('p', 'message-text');
-      body.dir = 'auto';
-      renderText(body, text);
-      item.append(meta, body);
+      if (pendingMessage) {
+        item.setAttribute('aria-busy', 'true');
+        elapsedNode = el('p', 'message-text message-elapsed');
+        elapsedNode.dir = 'auto';
+        elapsedNode.setAttribute('aria-hidden', 'true');
+        updateElapsed(pendingMessage);
+        item.append(elapsedNode);
+      }
       return item;
     }
 
     function renderMessages() {
       messageList.replaceChildren();
+      elapsedNode = null;
       if (active.messages.length === 0) {
-        messageList.append(renderMessage(false, t('assistant-greeting')));
+        messageList.append(renderMessage(false, [{ tone: 'reply', text: t('assistant-greeting') }]));
         return;
       }
       for (const message of active.messages) {
-        const isUser = message.role === 'user';
-        messageList.append(renderMessage(isUser, isUser ? message.text : t('assistant-stub-reply')));
+        if (message.role === 'user') {
+          messageList.append(renderMessage(true, [{ tone: 'reply', text: message.text }]));
+        } else if (message.response) {
+          messageList.append(renderMessage(false, describeResponse(message.response, t, i18n.getLanguage())));
+        } else {
+          messageList.append(renderMessage(false, [{ tone: 'waiting', text: t('assistant-waiting') }], message));
+        }
       }
       messageList.scrollTop = messageList.scrollHeight;
     }
@@ -135,14 +165,38 @@
       renderMessages();
     }
 
+    function ask(text, language) {
+      return fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, language }),
+      })
+        .then((response) => response.text().then((body) => responseFromHttp(response.status, body)))
+        .catch(() => ({ kind: 'unreachable' }));
+    }
+
+    function setWaiting(value) {
+      waiting = value;
+      sendButton.disabled = value;
+    }
+
     function send() {
       const text = input.value.trim();
-      if (!text) {
+      if (!text || waiting) {
         return;
       }
-      active.messages.push({ role: 'user', text }, { role: 'stub' });
+      const reply = { role: 'assistant', startedAt: Date.now(), response: null };
+      active.messages.push({ role: 'user', text }, reply);
       input.value = '';
+      setWaiting(true);
+      elapsedTimer = setInterval(() => updateElapsed(reply), 1000);
       render();
+      ask(text, languageSelect.value).then((response) => {
+        clearInterval(elapsedTimer);
+        reply.response = response;
+        setWaiting(false);
+        render();
+      });
     }
 
     function setLanguage(lang) {
