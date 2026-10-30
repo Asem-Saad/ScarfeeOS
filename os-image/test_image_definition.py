@@ -3,9 +3,12 @@
 Run: python3 os-image/test_image_definition.py
 
 This checks that config.xml is well-formed XML and follows the project's
-policy. It does not validate against the kiwi schema and does not build.
+policy. If kiwi-ng is on PATH it also validates config.xml against kiwi's own
+schema (that test is skipped otherwise). It does not build anything.
 """
 import re
+import shutil
+import subprocess
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -85,7 +88,34 @@ class ImageDefinition(unittest.TestCase):
         for name in self.config["bootstrap"] + self.config["image"]:
             self.assertFalse(name.startswith("fedora-"), name)
         self.assertIn("generic-release", self.config["image"])
-        self.assertIn("generic-logos", self.config["image"])
+
+    def test_no_logo_package_installed(self):
+        # generic-logos ships a KDE logo and files named fedora-*; no logo package until ScarfeeOS has its own.
+        for name in self.config["bootstrap"] + self.config["image"]:
+            self.assertNotIn("logos", name)
+        self.assertIn("generic-logos", self.config["ignore"])
+
+    def test_contact_is_set(self):
+        contact = self.root.find("description/contact").text
+        self.assertEqual(contact, "Asem Y Saad <asem.y.saad@outlook.com>")
+
+    def test_repositories_use_one_supported_release(self):
+        releases = set()
+        for repo in self.root.findall("repository"):
+            url = repo.find("source").get("path")
+            self.assertTrue(url.startswith("https://"), url)
+            match = re.search(r"/(?:releases|updates)/(\d+)/Everything/x86_64/", url)
+            self.assertIsNotNone(match, url)
+            releases.add(match.group(1))
+        self.assertEqual(len(releases), 1, releases)
+
+    @unittest.skipUnless(shutil.which("kiwi-ng"), "kiwi-ng is not installed")
+    def test_kiwi_schema_validation(self):
+        result = subprocess.run(
+            ["kiwi-ng", "image", "info", "--description", str(HERE)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_no_fedora_trademark_in_image_identity(self):
         self.assertNotIn("fedora", self.root.get("name").lower())

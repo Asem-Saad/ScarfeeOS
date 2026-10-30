@@ -1,6 +1,6 @@
 # ScarfeeOS image package list. Must match the <packages> sections in config.xml
-# (test_image_definition.py checks this). Names are NOT verified against a live
-# Fedora repository.
+# (test_image_definition.py checks this). Names were checked against the Fedora 44
+# repository metadata on 2026-10-30 (see README.md).
 
 [bootstrap]
 filesystem
@@ -16,7 +16,7 @@ grub2-efi-x64
 shim-x64
 grub2-pc
 syslinux
-dnf
+dnf5
 NetworkManager
 NetworkManager-wifi
 bluez
@@ -30,9 +30,8 @@ mesa-vulkan-drivers
 pipewire
 pipewire-pulseaudio
 wireplumber
-# Release and branding replacements
+# Release replacement (no logo package yet)
 generic-release
-generic-logos
 # Languages
 glibc-langpack-en
 glibc-langpack-ar
@@ -72,16 +71,20 @@ x265
 x265-libs
 ffmpeg
 libavcodec-freeworld
-gstreamer1-libav
+gstreamer1-plugin-libav
+ffmpeg-free
+libavcodec-free
 gstreamer1-plugins-bad-freeworld
-fdk-aac-free
-# Fedora-branded packages (docs/ip-and-licensing.md rule 6)
+# Fedora-branded packages (docs/ip-and-licensing.md rule 6), and generic-logos
+# (README.md, "Branded packages")
 fedora-release
 fedora-release-common
 fedora-release-identity-basic
 fedora-logos
 fedora-logos-classic
 fedora-logos-httpd
+generic-logos
+generic-logos-httpd
 fedora-bookmarks
 fedora-chromium-config
 fedora-flathub-remote

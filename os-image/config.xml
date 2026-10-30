@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   ScarfeeOS image description for kiwi (first draft).
-  NOT BUILT and NOT VALIDATED against the kiwi schema. Package names have
-  not been checked against a live Fedora repository. See README.md.
-  The package lists here must match packages.txt (checked by
+  NOT BUILT. Validated against the kiwi 11.1.6 schema, and package names
+  checked against the Fedora 44 repository metadata; see README.md for dates
+  and sources. The package lists here must match packages.txt (checked by
   test_image_definition.py).
 -->
-<image schemaversion="7.5" name="ScarfeeOS">
+<image schemaversion="8.5" name="ScarfeeOS">
   <description type="system">
     <author>ScarfeeOS contributors</author>
-    <contact>contact-not-set@example.invalid</contact>
+    <contact>Asem Y Saad &lt;asem.y.saad@outlook.com&gt;</contact>
     <specification>ScarfeeOS live and install image, English and Arabic, x86_64</specification>
   </description>
 
@@ -20,15 +20,17 @@
     <keytable>us</keytable>
     <timezone>UTC</timezone>
     <rpm-excludedocs>true</rpm-excludedocs>
-    <type image="iso" flags="overlay" firmware="uefi" bootloader="grub2" initrd_system="dracut" volid="SCARFEEOS" mediacheck="true"/>
+    <type image="iso" flags="overlay" firmware="uefi" volid="SCARFEEOS" mediacheck="true">
+      <bootloader name="grub2"/>
+    </type>
   </preferences>
 
-  <!-- The release number is a choice for the maintainer; confirm it is still supported. -->
+  <!-- Fedora 44 is the newest stable release on 2026-10-30 (Fedora 43 ends support 2026-12-02). Re-check before a real build. -->
   <repository type="rpm-md" alias="base" priority="99">
-    <source path="https://dl.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/"/>
+    <source path="https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Everything/x86_64/os/"/>
   </repository>
   <repository type="rpm-md" alias="updates" priority="99">
-    <source path="https://dl.fedoraproject.org/pub/fedora/linux/updates/43/Everything/x86_64/"/>
+    <source path="https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/"/>
   </repository>
 
   <packages type="image">
@@ -41,7 +43,7 @@
     <package name="shim-x64"/>
     <package name="grub2-pc"/>
     <package name="syslinux"/>
-    <package name="dnf"/>
+    <package name="dnf5"/>
     <package name="NetworkManager"/>
     <package name="NetworkManager-wifi"/>
     <package name="bluez"/>
@@ -55,9 +57,8 @@
     <package name="pipewire"/>
     <package name="pipewire-pulseaudio"/>
     <package name="wireplumber"/>
-    <!-- Release and branding replacements (see README.md, "Branded packages") -->
+    <!-- Release replacement; no logo package yet (see README.md, "Branded packages") -->
     <package name="generic-release"/>
-    <package name="generic-logos"/>
     <!-- Languages: both stay installed -->
     <package name="glibc-langpack-en"/>
     <package name="glibc-langpack-ar"/>
@@ -103,16 +104,19 @@
     <ignore name="x265-libs"/>
     <ignore name="ffmpeg"/>
     <ignore name="libavcodec-freeworld"/>
-    <ignore name="gstreamer1-libav"/>
+    <ignore name="gstreamer1-plugin-libav"/>
+    <ignore name="ffmpeg-free"/>
+    <ignore name="libavcodec-free"/>
     <ignore name="gstreamer1-plugins-bad-freeworld"/>
-    <ignore name="fdk-aac-free"/>
-    <!-- Fedora-branded packages that must not be installed -->
+    <!-- Fedora-branded packages that must not be installed, and generic-logos (ships a KDE logo and files named fedora-*) -->
     <ignore name="fedora-release"/>
     <ignore name="fedora-release-common"/>
     <ignore name="fedora-release-identity-basic"/>
     <ignore name="fedora-logos"/>
     <ignore name="fedora-logos-classic"/>
     <ignore name="fedora-logos-httpd"/>
+    <ignore name="generic-logos"/>
+    <ignore name="generic-logos-httpd"/>
     <ignore name="fedora-bookmarks"/>
     <ignore name="fedora-chromium-config"/>
     <ignore name="fedora-flathub-remote"/>
