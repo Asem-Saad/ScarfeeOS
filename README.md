@@ -4,6 +4,14 @@ An AI-first operating system for laptops. Talk to it or type to it, in **English
 
 > Status: early development. The assistant and its panel run on a development machine, but there is no installable system yet. See [where things stand](docs/lifecycle.md#where-things-stand).
 
+## Design
+
+![Concept of the ScarfeeOS desktop in English, with a calendar window, the assistant panel and a taskbar](docs/images/concept-en.png)
+
+![Concept of the ScarfeeOS desktop in Arabic, with every element mirrored from right to left](docs/images/concept-ar.png)
+
+*Design concept of the desktop in English and Arabic, not working software.* See [docs/design.md](docs/design.md) for real screenshots of what works today, the design principles and the visual language.
+
 ## Vision
 
 - **AI voice and text agent** built into the system. It opens apps, manages files, schedules meetings and helps with tasks.

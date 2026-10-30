@@ -2,7 +2,7 @@
 
 How ScarfeeOS goes from an idea to a released, maintained operating system, where it stands today, and what comes next. Stages run in order, but work can overlap. There are no target dates yet. They will be added once a bootable image exists and the remaining work can be measured.
 
-Task-level detail is in [ROADMAP.md](../ROADMAP.md).
+Task-level detail is in [ROADMAP.md](../ROADMAP.md). How it will look is in [design.md](design.md).
 
 ## Stages
 
@@ -37,7 +37,7 @@ Task-level detail is in [ROADMAP.md](../ROADMAP.md).
 
 **Known problems:**
 - No Arabic voice can ship yet. The leading candidate's dependencies appear to conflict with the licensing policy, and no safe Egyptian or Gulf voice has been found.
-- The local model sometimes rewrites reminder text incorrectly in Arabic and can be weak on general knowledge.
+- The local model sometimes rewrites reminder text incorrectly in Arabic, has answered an English question in Arabic, and can be weak on general knowledge.
 - The installer screens do not yet load on the development server.
 - Some tests fail on Windows, which is only a development platform. Linux is the target.
 
