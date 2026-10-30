@@ -26,4 +26,4 @@ ScarfeeOS-owned code is licensed under **Apache-2.0** (see `LICENSE`), which inc
 - Patent freedom-to-operate for core features (e.g. the voice agent).
 - Fedora trademark and redistribution terms, and GPL obligations of the base image.
 - Anthropic API terms.
-- Create the CI license check.
+- AAC in the OS image: PipeWire on Fedora requires `fdk-aac-free`, which rule 4 allows only after the patent status is verified. It stays in the image for now and must be settled before any public release.
