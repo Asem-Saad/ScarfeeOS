@@ -1,4 +1,5 @@
 use scarfeeos_core::assistant::{Assistant, Outcome};
+use scarfeeos_core::executor::Executor;
 use scarfeeos_core::guard::LiveData;
 use scarfeeos_core::ipc;
 use scarfeeos_core::lang::Language;
@@ -63,13 +64,18 @@ fn chat(text: &str, lang: Language) {
 }
 
 /// JSON lines on stdin and stdout, for the shell. Only responses go to stdout.
+/// Confirmed tools run here; `chat` only describes them.
 fn serve() {
     let (command, writer) = providers().unwrap_or_else(|e| {
         eprintln!("serve: {e}");
         std::process::exit(2);
     });
+    let mut executor = Executor::from_env().unwrap_or_else(|e| {
+        eprintln!("serve: {e}");
+        std::process::exit(2);
+    });
     let assistant = assistant_for(&command, &writer);
-    if let Err(e) = ipc::serve(&assistant, std::io::stdin().lock(), std::io::stdout().lock()) {
+    if let Err(e) = ipc::serve(&assistant, &mut executor, std::io::stdin().lock(), std::io::stdout().lock()) {
         eprintln!("serve: {e}");
         std::process::exit(1);
     }
