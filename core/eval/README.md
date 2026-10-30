@@ -4,6 +4,7 @@ Benchmark prompts used to choose default models. A model that fails the Arabic p
 
 ## Files
 - `prompts.jsonl`: one JSON object per line. 51 prompts.
+- `prompts-dialects.jsonl`: 30 more Egyptian and Gulf prompts. Use it with `--prompts` on `run_pipeline.py` and `grade.py`.
 - `run_eval.ps1`: sends each prompt to a local llama-server and writes `results/<label>.jsonl` (model replies only).
 - `run_pipeline.py`: sends each prompt through `scarfeeos-core chat` and writes `results/pipeline.jsonl` (the whole assistant, not just the model).
 - `grade.py`: grades either results file against `prompts.jsonl`. `test_grade.py` tests it (`python3 -m unittest discover -s .`).

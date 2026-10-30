@@ -17,7 +17,7 @@ The concept shows the intended desktop:
 - **Taskbar:** the ScarfeeOS logo, then the calendar, documents, spreadsheets, presentations, email, media player and browser, with the language switch and clock at the other end.
 - **Actions you can check:** before a risky change, the assistant shows what it will do, with Confirm and Cancel.
 
-The concept's desktop and taskbar are not built yet. Its one-window session may also need to change: the image currently plans a single-window kiosk session, which cannot show several app windows side by side like this concept does.
+The concept's desktop and taskbar are not built yet. The image now plans Wayfire, a compositor that can show several windows like this concept, but no session has been started on it. Rounded corners and soft shadows may not be available in that session, so the final look may differ.
 
 ## Working today
 

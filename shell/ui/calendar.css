@@ -226,3 +226,8 @@ body {
   align-items: center;
   gap: 0.35rem;
 }
+
+a.button {
+  color: inherit;
+  text-decoration: none;
+}
