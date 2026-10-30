@@ -5,3 +5,4 @@ node_modules/
 *.img
 .env
 .vscode/
+.private/
