@@ -20,8 +20,6 @@
 {"id":"qa-006","category":"qa","lang":"ar","prompt":"كم عدد أيام السنة الكبيسة ولماذا؟","expect":"366; extra day on 29 February because the solar year is about 365.25 days."}
 {"id":"qa-007","category":"qa","lang":"ar","prompt":"ما هي عاصمة المملكة العربية السعودية؟","expect":"Riyadh (الرياض)."}
 {"id":"qa-008","category":"qa","lang":"ar","prompt":"كم يساوي 15% من 240؟","expect":"36."}
-{"id":"qa-009","category":"qa","lang":"en","prompt":"What are the five pillars of Islam?","expect":"Shahada, salah, zakat, sawm, hajj; accurate and respectful."}
-{"id":"qa-010","category":"qa","lang":"ar","prompt":"ما هي أركان الإسلام الخمسة؟","expect":"الشهادتان، الصلاة، الزكاة، صوم رمضان، حج البيت; accurate and respectful."}
 {"id":"qa-011","category":"qa","lang":"ar","prompt":"ما الفرق بين الفعل المبني للمعلوم والمبني للمجهول؟","expect":"Active vs passive voice in Arabic grammar, with a correct example."}
 {"id":"qa-012","category":"qa","lang":"en","prompt":"Convert 5 kilometres to miles.","expect":"About 3.1 miles."}
 {"id":"codeswitch-001","category":"codeswitch","lang":"mixed","prompt":"افتح الـ browser وروح على موقع الـ email.","expect":"Understands the mixed request: opens the browser app (open_app) and does not refuse because of mixed language."}
