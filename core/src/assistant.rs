@@ -127,7 +127,7 @@ impl<'a> Assistant<'a> {
     }
 
     /// Asks `model` once more when the reply has words in a foreign script,
-    /// is in English for an Arabic request, or names an internal tool. Keeps
+    /// is in the other language than the request (English for Arabic, Arabic for English), or names an internal tool. Keeps
     /// whichever reply has fewer of these problems.
     fn checked_reply(
         &self,
@@ -154,9 +154,11 @@ impl<'a> Assistant<'a> {
                 ));
             }
             if wrong_language {
-                retry.push_str(
-                    " Your last reply was in English, but the user wrote in Arabic. Reply again in Arabic only, in the user's dialect.",
-                );
+                retry.push_str(if lang::pure_script(user_text) == Some(Language::English) {
+                    " Your last reply was in Arabic, but the user wrote in English. Reply again in English only."
+                } else {
+                    " Your last reply was in English, but the user wrote in Arabic. Reply again in Arabic only, in the user's dialect."
+                });
             }
             if names_tool {
                 retry.push_str(
@@ -244,12 +246,19 @@ fn in_user_language(model_text: String, user_text: &str) -> String {
 const REPLY_RULES: &str = "\
 Always reply in the language and dialect of the user's latest message. \
 If it is Arabic, reply in Arabic, in the same dialect (Gulf, Egyptian, Levantine, Maghrebi or Modern Standard), and never in English. \
-If it is English, reply in English. Never answer in English only because the request is about music, writing or anything else. \
+If it is English, reply in English only, and never in Arabic, even when the question is about Egypt, Arabic or anything Arabic. \
+If it mixes both languages, reply in the language of most of its words. \
+Never answer in English only because the request is about music, writing or anything else. \
+Only a request to translate, or to write in a named language, changes the language of the reply. \
 ردّ دائمًا بلغة رسالة المستخدم ولهجتها. إذا كتب المستخدم بالعربية فاكتب بالعربية فقط، ولا تردّ بالإنجليزية أبدًا. \
+وإذا كتب بالإنجليزية فاكتب بالإنجليزية فقط، وإذا خلط اللغتين فاتبع اللغة الغالبة على رسالته. \
 Never mention tools or functions, or their names, to the user, and never say \"the available tools\". \
 لا تذكر الأدوات أو الدوال أو أسماءها للمستخدم أبدًا. \
 Answer questions and writing requests yourself, directly: unit conversions, maths, emails and other texts, translations, explanations, advice. \
 Never refuse because no tool fits. \
+When you give advice, keep it general. Never say or suggest that you can do something, such as deleting, moving, organizing or searching files, \
+unless a tool for it is offered to you in this conversation. \
+عند تقديم نصيحة اجعلها عامة، ولا تقل أو تلمّح أنك تستطيع فعل شيء، مثل حذف الملفات أو نقلها أو ترتيبها أو البحث فيها، إلا إذا توفرت لك أداة لذلك في هذه المحادثة. \
 أجب بنفسك مباشرة عن الأسئلة وطلبات الكتابة والتحويل والترجمة، ولا ترفض بحجة عدم وجود أداة. \
 If you truly cannot do something on this computer, say so briefly in the user's language, without naming any tool. \
 Never invent data.";
@@ -258,6 +267,9 @@ Never invent data.";
 const TOOL_RULES: &str = "\
 Tools are only for acting on this computer: opening apps, listing or searching files, reminders, meetings and the system language. \
 Call a tool only when one fits the request. \
+Playing music, a song or a playlist means opening the music app: call open_app with the name \"music\". \
+Never say you have no tool for music. \
+تشغيل الموسيقى أو أغنية يعني فتح تطبيق الموسيقى: استدعِ open_app باسم \"music\"، ولا تقل إنه لا توجد أداة للموسيقى. \
 A polite request or a question about ability, in any dialect, is a command and not a question: \
 \"Can you open the calculator?\", \"ممكن تفتح الآلة الحاسبة\", \"فيك تفتحلي الإيميل؟\", \"لو سمحت افتح الإيميل\". \
 Do it and do not ask back. \
@@ -1213,6 +1225,72 @@ mod tests {
         // Still English on the retry: the first reply is kept, with no third call.
         let m = model_seq(vec![text(english), text(english)]);
         assert_eq!(turn(&m, "شغلي أغنية", Language::Arabic), (reply(english), 2));
+    }
+
+    #[test]
+    fn arabic_reply_to_an_english_request_is_retried_once() {
+        let q = "What is the capital of Egypt? One word.";
+        let m = model_seq(vec![text("القاهرة"), text("Cairo")]);
+        assert_eq!(turn(&m, q, Language::English), (reply("Cairo"), 2));
+        assert!(m.last_system.borrow().contains("the user wrote in English"));
+        // Still Arabic on the retry: the first reply is kept, with no third call.
+        let m = model_seq(vec![text("القاهرة"), text("القاهرة")]);
+        assert_eq!(turn(&m, q, Language::English), (reply("القاهرة"), 2));
+        // A failed retry keeps the first reply.
+        let m = model_seq(vec![text("القاهرة"), Err("down".to_string())]);
+        assert_eq!(turn(&m, q, Language::English), (reply("القاهرة"), 2));
+        // The Arabic request keeps its own check, with its own retry text.
+        let m = model_seq(vec![text("The capital is Cairo."), text("القاهرة")]);
+        assert_eq!(turn(&m, "ما هي عاصمة مصر؟", Language::Arabic), (reply("القاهرة"), 2));
+        assert!(m.last_system.borrow().contains("the user wrote in Arabic"));
+    }
+
+    #[test]
+    fn a_right_language_or_a_translation_is_not_retried() {
+        let m = model(text("Cairo"));
+        assert_eq!(turn(&m, "What is the capital of Egypt? One word.", Language::English).1, 1);
+        let m = model(text("القاهرة"));
+        assert_eq!(turn(&m, "ما هي عاصمة مصر؟ كلمة واحدة.", Language::Arabic).1, 1);
+        for user in ["Translate to Arabic: Cairo", "How do you say Cairo in Arabic?"] {
+            let m = model(text("القاهرة"));
+            assert_eq!(turn(&m, user, Language::English), (reply("القاهرة"), 1), "{user}");
+        }
+        // Mixed requests are not checked in either direction.
+        let m = model(text("القاهرة"));
+        assert_eq!(turn(&m, "What is القاهرة?", Language::English).1, 1);
+    }
+
+    #[test]
+    fn the_writer_retries_an_arabic_reply_to_an_english_request() {
+        let m = model(text("command model text"));
+        let w = model_seq(vec![text("القاهرة"), text("Cairo")]);
+        let (outcome, cmd, writer) = turn_with_writer(&m, &w, "What is the capital of Egypt? One word.", Language::English);
+        assert_eq!((outcome, cmd, writer), (reply("Cairo"), 1, 2));
+        assert!(w.last_system.borrow().contains("the user wrote in English"));
+    }
+
+    #[test]
+    fn prompts_set_the_language_music_and_no_invented_features() {
+        let m = model(call("open_app", r#"{"name":"music"}"#));
+        turn(&m, "شغّل لي الموسيقى", Language::Arabic);
+        let system = m.last_system.borrow().clone();
+        for needed in [
+            "reply in English only, and never in Arabic",
+            "reply in the language of most of its words",
+            "Only a request to translate",
+            "فاتبع اللغة الغالبة",
+            "keep it general",
+            "unless a tool for it is offered",
+            "Playing music, a song or a playlist means opening the music app",
+            "Never say you have no tool for music",
+            "تشغيل الموسيقى",
+        ] {
+            assert!(system.contains(needed), "{needed}: {system}");
+        }
+        let w = model(text("اهلا"));
+        turn_with_writer(&model(text("x")), &w, "مرحبا", Language::Arabic);
+        assert!(w.last_system.borrow().contains("keep it general"));
+        assert!(!w.last_system.borrow().contains("opening the music app"));
     }
 
     #[test]

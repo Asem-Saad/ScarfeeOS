@@ -108,14 +108,24 @@ pub fn names_a_tool(reply: &str) -> bool {
         .any(|word| TOOL_NAMES.iter().any(|name| word.eq_ignore_ascii_case(name)))
 }
 
-/// True when the request is only in Arabic letters and the reply is a sentence
-/// (three words or more) only in Latin letters. A short "OK" or a name is not
-/// a wrong language. Not when the user asked for a translation or for English.
+/// True when the reply is in the wrong one of the two scripts for the request.
+/// Arabic request: the reply is a sentence (three words or more) only in Latin
+/// letters; a short "OK" or a name is not wrong, and not when the user asked
+/// for a translation or for English. Latin request: the reply is only in Arabic
+/// letters, even one word; not when the user asked for a translation or named
+/// Arabic. A request with both scripts is never checked.
 pub fn replied_in_wrong_language(user_text: &str, reply: &str) -> bool {
-    if lang::pure_script(user_text) != Some(Language::Arabic) || lang::pure_script(reply) != Some(Language::English) {
-        return false;
+    match (lang::pure_script(user_text), lang::pure_script(reply)) {
+        (Some(Language::Arabic), Some(Language::English)) => {
+            reply.split_whitespace().count() >= 3
+                && !asks_to_translate(user_text)
+                && !normalize(user_text).contains("انجليز")
+        }
+        (Some(Language::English), Some(Language::Arabic)) => {
+            !asks_to_translate(user_text) && !normalize(user_text).contains("arab")
+        }
+        _ => false,
     }
-    reply.split_whitespace().count() >= 3 && !asks_to_translate(user_text) && !normalize(user_text).contains("انجليز")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -819,5 +829,22 @@ mod tests {
         assert!(!replied_in_wrong_language("ترجم صباح الخير إلى الإنجليزية", "Good morning"));
         assert!(!replied_in_wrong_language("اكتب رسالة بالانجليزي", "Hello"));
         assert!(!replied_in_wrong_language("اكتب رسالة بالإنجليزية", "Hello"));
+    }
+
+    #[test]
+    fn only_a_purely_arabic_reply_to_a_purely_latin_request_is_wrong() {
+        assert!(replied_in_wrong_language("What is the capital of Egypt? One word.", "القاهرة"));
+        assert!(replied_in_wrong_language("Play a song", "عذرًا، لا أستطيع تشغيل الموسيقى"));
+        // Both scripts in the reply or in the request: not checked.
+        assert!(!replied_in_wrong_language("What is the capital of Egypt?", "القاهرة (Cairo)"));
+        assert!(!replied_in_wrong_language("What is القاهرة in English?", "Cairo"));
+        assert!(!replied_in_wrong_language("What is القاهرة?", "عاصمة مصر"));
+        // No letters in the reply, or the reply is in the request's language.
+        assert!(!replied_in_wrong_language("What is 2+2?", "٤"));
+        assert!(!replied_in_wrong_language("What is the capital of Egypt?", "Cairo"));
+        // Translation and Arabic requests.
+        for user in ["Translate to Arabic: good morning", "translate good morning", "Say good morning in Arabic", "Write it in arabic"] {
+            assert!(!replied_in_wrong_language(user, "صباح الخير"), "{user}");
+        }
     }
 }
