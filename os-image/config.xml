@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ScarfeeOS image description for kiwi (first draft).
+  NOT BUILT and NOT VALIDATED against the kiwi schema. Package names have
+  not been checked against a live Fedora repository. See README.md.
+  The package lists here must match packages.txt (checked by
+  test_image_definition.py).
+-->
+<image schemaversion="7.5" name="ScarfeeOS">
+  <description type="system">
+    <author>ScarfeeOS contributors</author>
+    <contact>contact-not-set@example.invalid</contact>
+    <specification>ScarfeeOS live and install image, English and Arabic, x86_64</specification>
+  </description>
+
+  <preferences>
+    <version>0.0.1</version>
+    <packagemanager>dnf4</packagemanager>
+    <locale>en_US,ar_SA</locale>
+    <keytable>us</keytable>
+    <timezone>UTC</timezone>
+    <rpm-excludedocs>true</rpm-excludedocs>
+    <type image="iso" flags="overlay" firmware="uefi" bootloader="grub2" initrd_system="dracut" volid="SCARFEEOS" mediacheck="true"/>
+  </preferences>
+
+  <!-- The release number is a choice for the maintainer; confirm it is still supported. -->
+  <repository type="rpm-md" alias="base" priority="99">
+    <source path="https://dl.fedoraproject.org/pub/fedora/linux/releases/43/Everything/x86_64/os/"/>
+  </repository>
+  <repository type="rpm-md" alias="updates" priority="99">
+    <source path="https://dl.fedoraproject.org/pub/fedora/linux/updates/43/Everything/x86_64/"/>
+  </repository>
+
+  <packages type="image">
+    <!-- Base system and boot -->
+    <package name="systemd"/>
+    <package name="kernel"/>
+    <package name="dracut"/>
+    <package name="dracut-kiwi-live"/>
+    <package name="grub2-efi-x64"/>
+    <package name="shim-x64"/>
+    <package name="grub2-pc"/>
+    <package name="syslinux"/>
+    <package name="dnf"/>
+    <package name="NetworkManager"/>
+    <package name="NetworkManager-wifi"/>
+    <package name="bluez"/>
+    <package name="power-profiles-daemon"/>
+    <package name="polkit"/>
+    <package name="sudo"/>
+    <package name="linux-firmware"/>
+    <!-- Graphics and audio (Vulkan is used by llama.cpp on the Full tier) -->
+    <package name="mesa-dri-drivers"/>
+    <package name="mesa-vulkan-drivers"/>
+    <package name="pipewire"/>
+    <package name="pipewire-pulseaudio"/>
+    <package name="wireplumber"/>
+    <!-- Release and branding replacements (see README.md, "Branded packages") -->
+    <package name="generic-release"/>
+    <package name="generic-logos"/>
+    <!-- Languages: both stay installed -->
+    <package name="glibc-langpack-en"/>
+    <package name="glibc-langpack-ar"/>
+    <package name="hunspell-ar"/>
+    <!-- Text shaping, bidi and fonts (docs/i18n-and-arabic.md rules 4 and 5) -->
+    <package name="fontconfig"/>
+    <package name="harfbuzz"/>
+    <package name="fribidi"/>
+    <package name="google-noto-naskh-arabic-fonts"/>
+    <package name="google-noto-kufi-arabic-fonts"/>
+    <package name="ibm-plex-sans-arabic-fonts"/>
+    <package name="google-noto-sans-fonts"/>
+    <!-- Arabic input -->
+    <package name="ibus"/>
+    <package name="ibus-gtk3"/>
+    <package name="ibus-gtk4"/>
+    <package name="ibus-m17n"/>
+    <package name="m17n-db"/>
+    <package name="ibus-typing-booster"/>
+    <!-- Royalty-free media libraries only -->
+    <package name="libvpx"/>
+    <package name="libaom"/>
+    <package name="dav1d"/>
+    <package name="opus"/>
+    <package name="libvorbis"/>
+    <package name="libogg"/>
+    <package name="flac-libs"/>
+  </packages>
+
+  <packages type="bootstrap">
+    <package name="filesystem"/>
+    <package name="glibc-langpack-en"/>
+  </packages>
+
+  <!-- Patent-licensed codecs must never be pulled in as dependencies. -->
+  <packages type="image">
+    <ignore name="openh264"/>
+    <ignore name="mozilla-openh264"/>
+    <ignore name="gstreamer1-plugin-openh264"/>
+    <ignore name="x264"/>
+    <ignore name="x264-libs"/>
+    <ignore name="x265"/>
+    <ignore name="x265-libs"/>
+    <ignore name="ffmpeg"/>
+    <ignore name="libavcodec-freeworld"/>
+    <ignore name="gstreamer1-libav"/>
+    <ignore name="gstreamer1-plugins-bad-freeworld"/>
+    <ignore name="fdk-aac-free"/>
+    <!-- Fedora-branded packages that must not be installed -->
+    <ignore name="fedora-release"/>
+    <ignore name="fedora-release-common"/>
+    <ignore name="fedora-release-identity-basic"/>
+    <ignore name="fedora-logos"/>
+    <ignore name="fedora-logos-classic"/>
+    <ignore name="fedora-logos-httpd"/>
+    <ignore name="fedora-bookmarks"/>
+    <ignore name="fedora-chromium-config"/>
+    <ignore name="fedora-flathub-remote"/>
+    <ignore name="fedora-third-party"/>
+    <ignore name="fedora-workstation-repositories"/>
+  </packages>
+</image>
