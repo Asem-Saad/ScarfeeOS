@@ -1,5 +1,6 @@
 use scarfeeos_core::assistant::{Assistant, Outcome};
 use scarfeeos_core::guard::LiveData;
+use scarfeeos_core::ipc;
 use scarfeeos_core::lang::Language;
 use scarfeeos_core::provider::LocalProvider;
 use scarfeeos_core::tools::SystemClock;
@@ -13,8 +14,9 @@ fn main() {
     match args.first().map(String::as_str) {
         None => println!("ScarfeeOS core starting (language: {})", lang.native_name()),
         Some("chat") if args.len() > 1 => chat(&args[1..].join(" "), lang),
+        Some("serve") if args.len() == 1 => serve(),
         Some(_) => {
-            eprintln!("usage: scarfeeos-core [chat \"text\"]");
+            eprintln!("usage: scarfeeos-core [chat \"text\" | serve]");
             std::process::exit(2);
         }
     }
@@ -26,6 +28,16 @@ fn chat(text: &str, lang: Language) {
     let outcome = Assistant::new(&provider, &SystemClock).handle(text, lang);
     println!("{}", describe(&outcome));
     if matches!(outcome, Outcome::Error(_)) {
+        std::process::exit(1);
+    }
+}
+
+/// JSON lines on stdin and stdout, for the shell. Only responses go to stdout.
+fn serve() {
+    let provider = LocalProvider::default();
+    let assistant = Assistant::new(&provider, &SystemClock);
+    if let Err(e) = ipc::serve(&assistant, std::io::stdin().lock(), std::io::stdout().lock()) {
+        eprintln!("serve: {e}");
         std::process::exit(1);
     }
 }
