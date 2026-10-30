@@ -1,4 +1,5 @@
 pub mod assistant;
+pub mod calendar;
 pub mod datetime;
 pub mod guard;
 pub mod hardware;
