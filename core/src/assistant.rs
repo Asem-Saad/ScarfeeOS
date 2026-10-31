@@ -267,6 +267,10 @@ Call a tool only when one fits the request. \
 Playing music, a song or a playlist means opening the music app: call open_app with the name \"music\". \
 Never say you have no tool for music. \
 تشغيل الموسيقى أو أغنية يعني فتح تطبيق الموسيقى: استدعِ open_app باسم \"music\"، ولا تقل إنه لا توجد أداة للموسيقى. \
+Looking for a file, in any dialect, is search_files with the name as spoken, never open_app: \"دوّرلي على ملف\", \"دور لي على ملف\", \"فتّش عن ملف\". \
+البحث عن ملف بأي لهجة (دوّر، فتّش، ابحث) هو search_files وليس open_app. \
+Changing the system language is set_language: \"خلّ اللغة عربي\", \"خلي اللغة إنجليزي\", \"غيّر اللغة\". \
+تغيير لغة النظام (خلّ، خلي، غيّر) هو set_language. \
 A polite request or a question about ability, in any dialect, is a command and not a question: \
 \"Can you open the calculator?\", \"ممكن تفتح الآلة الحاسبة\", \"فيك تفتحلي الإيميل؟\", \"لو سمحت افتح الإيميل\". \
 Do it and do not ask back. \
@@ -326,9 +330,9 @@ fn tool_schema_for(set_language: bool) -> Value {
     }
     let text = |d: &str| json!({"type": "string", "description": d});
     let mut tools = json!([
-        tool("open_app", "Open an application.", json!({"name": text("App name")}), &["name"]),
+        tool("open_app", "Open an application. Not for files.", json!({"name": text("App name")}), &["name"]),
         tool("list_files", "List files in a folder.", json!({"path": text("Folder path")}), &["path"]),
-        tool("search_files", "Search for files by name.", json!({"query": text("Search text")}), &["query"]),
+        tool("search_files", "Search for a file by name (دوّر, فتّش).", json!({"query": text("Search text")}), &["query"]),
         tool(
             "create_reminder",
             "Create a reminder.",
@@ -1388,6 +1392,89 @@ mod tests {
         turn_with_writer(&model(text("x")), &w, "مرحبا", Language::Arabic);
         assert!(w.last_system.borrow().contains("keep it general"));
         assert!(!w.last_system.borrow().contains("opening the music app"));
+    }
+
+    /// The dialect benchmark prompts: (id, text, language, expected tool name and arguments).
+    fn dialect_prompts() -> Vec<(String, String, Language, Option<(String, String)>)> {
+        include_str!("../eval/prompts-dialects.jsonl")
+            .lines()
+            .map(|line| {
+                let v: Value = serde_json::from_str(line).unwrap();
+                let language = if v["lang"] == "en" { Language::English } else { Language::Arabic };
+                let tool = v.get("tool").map(|t| (t["name"].as_str().unwrap().to_string(), t["args"].to_string()));
+                (v["id"].as_str().unwrap().to_string(), v["prompt"].as_str().unwrap().to_string(), language, tool)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn code_does_not_stop_the_dialect_file_and_language_commands() {
+        // dialect-eg-005/006 opened an app and dialect-gulf-005/013 called no tool on
+        // the model. If the model proposes the right tool, nothing in code may block it.
+        let mut checked = 0;
+        for (id, user, language, tool) in dialect_prompts() {
+            let Some((name, args)) = tool else { continue };
+            if !matches!(name.as_str(), "open_app" | "list_files" | "search_files" | "set_language") {
+                continue;
+            }
+            let m = model(call(&name, &args));
+            let (outcome, calls) = turn(&m, &user, language);
+            assert_eq!(calls, 1, "{id}: the model must be asked");
+            assert!(offered_tools(&m).contains(&name), "{id}: {name} must be offered");
+            match outcome {
+                Outcome::Run(_) if name != "set_language" => {}
+                Outcome::NeedsConfirmation(ToolCall::SetLanguage { .. }) if name == "set_language" => {}
+                other => panic!("{id}: {other:?}"),
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 14);
+    }
+
+    #[test]
+    fn prompt_separates_file_search_from_opening_an_app_and_names_the_language_command() {
+        let m = model(call("search_files", r#"{"query":"فاتورة الكهربا"}"#));
+        let (outcome, _) = turn(&m, "دوّرلي على ملف اسمه فاتورة الكهربا.", Language::Arabic);
+        assert_eq!(outcome, Outcome::Run(ToolCall::SearchFiles { query: "فاتورة الكهربا".into() }));
+        let system = m.last_system.borrow().clone();
+        for needed in [
+            "search_files with the name as spoken, never open_app",
+            "دوّرلي على ملف",
+            "دور لي على ملف",
+            "هو search_files وليس open_app",
+            "Changing the system language is set_language",
+            "خلّ اللغة عربي",
+            "هو set_language",
+        ] {
+            assert!(system.contains(needed), "{needed}");
+        }
+        let schema = tool_schema();
+        let description = |name: &str| {
+            schema.as_array().unwrap().iter().find(|t| t["function"]["name"] == name).unwrap()["function"]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(description("open_app").contains("Not for files"));
+        assert!(description("search_files").contains("دوّر"));
+    }
+
+    #[test]
+    fn chinese_punctuation_in_an_arabic_reply_is_retried_once() {
+        // dialect-eg-015 leaked Chinese into the answer.
+        let m = model_seq(vec![text("الواي فاي，هو اتصال لاسلكي"), text("الواي فاي اتصال لاسلكي.")]);
+        let (outcome, calls) = turn(&m, "إيه الفرق بين الواي فاي والداتا؟", Language::Arabic);
+        assert_eq!(calls, 2);
+        assert_eq!(outcome, reply("الواي فاي اتصال لاسلكي."));
+        assert!(m.last_system.borrow().contains("foreign script"));
+        // When the second answer is as bad, the first is kept and the words are reported.
+        let m = model_seq(vec![text("الواي فاي是一种شبكة"), text("الداتا 也是شبكة")]);
+        match turn(&m, "إيه الفرق بين الواي فاي والداتا؟", Language::Arabic).0 {
+            Outcome::Reply { issues, .. } => {
+                assert!(!issues.is_empty() && issues.iter().all(|i| i.script == guard::Script::Cjk));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

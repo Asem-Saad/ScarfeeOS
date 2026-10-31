@@ -35,6 +35,8 @@ fn allowed(language: Language) -> &'static [Script] {
 }
 
 /// Greek is left out on purpose: π and Δ are normal in technical answers.
+/// Chinese punctuation (，。（）) and full-width letters count as CJK: small
+/// models write them around Arabic words, and they are not Arabic or Latin.
 fn script_of(c: char) -> Option<Script> {
     let n = c as u32;
     let in_any = |ranges: &[(u32, u32)]| ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&n));
@@ -51,8 +53,8 @@ fn script_of(c: char) -> Option<Script> {
     } else if in_any(&[(0x1100, 0x11FF), (0x3130, 0x318F), (0xA960, 0xA97F), (0xAC00, 0xD7FF), (0xFFA0, 0xFFDC)]) {
         Some(Script::Hangul)
     } else if in_any(&[
-        (0x2E80, 0x2FDF), (0x3007, 0x3007), (0x3100, 0x312F), (0x31A0, 0x31BF), (0x3400, 0x4DBF),
-        (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0x20000, 0x2EBEF),
+        (0x2E80, 0x2FDF), (0x3001, 0x303F), (0x3100, 0x312F), (0x31A0, 0x31BF), (0x3400, 0x4DBF),
+        (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0xFF01, 0xFF0F), (0xFF1A, 0xFF65), (0x20000, 0x323AF),
     ]) {
         Some(Script::Cjk)
     } else if in_any(&[(0x590, 0x5FF), (0xFB1D, 0xFB4F)]) {
@@ -67,7 +69,7 @@ fn script_of(c: char) -> Option<Script> {
 }
 
 /// Reports every word written in a script that does not belong in `language`.
-/// Digits, punctuation, emoji and symbols are never reported.
+/// Digits, Western punctuation, emoji and symbols are never reported.
 pub fn check_reply(reply: &str, language: Language) -> Vec<Issue> {
     let allowed = allowed(language);
     let mut issues = Vec::new();
@@ -106,6 +108,232 @@ pub fn names_a_tool(reply: &str) -> bool {
     reply
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .any(|word| TOOL_NAMES.iter().any(|name| word.eq_ignore_ascii_case(name)))
+}
+
+/// Words that can sit between "I can" and the verb ("I can also help you delete").
+/// Any other word, such as "show you how to", makes the sentence an explanation.
+const CLAIM_FILLER_EN: &[&str] = &[
+    "also", "easily", "quickly", "now", "then", "gladly", "happily", "certainly", "definitely", "help", "you", "to",
+    "go", "ahead", "and", "just", "even", "still", "always", "simply", "please", "only", "with", "me", "for", "have",
+    "already", "successfully", "gone",
+];
+
+/// How a reply starts to say "I can do this": ability, future, offer.
+const CLAIM_EN: &[&[&str]] = &[
+    &["i", "can"], &["i", "could"], &["i", "will"], &["ill"], &["i", "am", "able", "to"], &["im", "able", "to"],
+    &["i", "am", "going", "to"], &["im", "going", "to"], &["let", "me"], &["want", "me", "to"],
+    &["like", "me", "to"], &["ask", "me", "to"], &["shall", "i"],
+];
+
+/// How a reply starts to say "I did this". Only a past verb may follow.
+const DONE_EN: &[&[&str]] = &[&["i"], &["ive"]];
+
+/// Words that name files and what holds them. A verb on one of these is about
+/// files, not about text ("sort the list").
+const FILE_NOUNS_EN: &[&str] = &[
+    "file", "files", "folder", "folders", "directory", "directories", "document", "documents", "download", "downloads",
+    "photo", "photos", "picture", "pictures", "image", "images", "video", "videos", "desktop", "disk", "drive",
+    "storage",
+];
+
+/// Pronouns that count as files after a verb that changes them ("organize them").
+const PRONOUNS_EN: &[&str] = &["them", "these", "those", "everything"];
+
+/// One kind of thing a reply can claim. `tool` is the tool that makes the claim
+/// true, or `None` when no tool does.
+struct Ability {
+    tool: Option<&'static str>,
+    /// English verbs as (base, -ing, past).
+    verbs_en: &'static [[&'static str; 3]],
+    /// Arabic verbs in the first person, present: "I delete".
+    verbs_ar: &'static [&'static str],
+    /// The same actions as Arabic nouns: "deleting".
+    nouns_ar: &'static [&'static str],
+}
+
+// Arabic words are in normalized form (see `normalize`).
+const ABILITIES: &[Ability] = &[
+    Ability {
+        tool: None,
+        verbs_en: &[
+            ["delete", "deleting", "deleted"], ["remove", "removing", "removed"], ["erase", "erasing", "erased"],
+            ["trash", "trashing", "trashed"], ["move", "moving", "moved"], ["copy", "copying", "copied"],
+            ["rename", "renaming", "renamed"], ["organize", "organizing", "organized"],
+            ["organise", "organising", "organised"], ["reorganize", "reorganizing", "reorganized"],
+            ["arrange", "arranging", "arranged"], ["rearrange", "rearranging", "rearranged"],
+            ["sort", "sorting", "sorted"], ["clean", "cleaning", "cleaned"], ["tidy", "tidying", "tidied"],
+            ["declutter", "decluttering", "decluttered"], ["compress", "compressing", "compressed"],
+            ["zip", "zipping", "zipped"], ["archive", "archiving", "archived"],
+            ["categorize", "categorizing", "categorized"], ["merge", "merging", "merged"],
+        ],
+        verbs_ar: &["احذف", "امسح", "ازيل", "انقل", "انسخ", "ارتب", "انظم", "افرز", "اصنف", "انظف", "اضغط", "احرك"],
+        nouns_ar: &["حذف", "مسح", "ازاله", "نقل", "نسخ", "ترتيب", "تنظيم", "فرز", "تصنيف", "تنظيف", "ضغط", "تحريك"],
+    },
+    Ability {
+        tool: Some("search_files"),
+        verbs_en: &[["search", "searching", "searched"], ["find", "finding", "found"], ["locate", "locating", "located"]],
+        verbs_ar: &["ابحث", "ادور"],
+        nouns_ar: &["بحث"],
+    },
+    Ability {
+        tool: Some("list_files"),
+        verbs_en: &[["list", "listing", "listed"], ["show", "showing", "showed"], ["display", "displaying", "displayed"]],
+        verbs_ar: &["اعرض"],
+        nouns_ar: &["عرض"],
+    },
+];
+
+/// Words between a claim opener and the verb in Arabic ("اقدر اساعدك في ترتيب").
+const CLAIM_FILLER_AR: &[&str] = &[
+    "ان", "ايضا", "كذلك", "بسهوله", "بسرعه", "في", "على", "اساعدك", "اساعدكم", "ساعدك", "مساعدتك", "مساعدتكم", "ل",
+    "بكل", "سرور", "هنا", "الان", "فورا", "تلقائيا",
+];
+
+/// Words that open an Arabic claim: I can, I am able, will, let me, and "مني"
+/// as in "تريد مني" (do you want me to).
+const CLAIM_AR: &[&str] = &[
+    "اقدر", "استطيع", "يمكنني", "بامكاني", "باستطاعتي", "سوف", "رح", "راح", "خلني", "خليني", "دعني", "مني", "تريدني",
+    "تحبني", "تبيني", "تبغاني",
+];
+
+/// Words that turn an Arabic claim into a refusal: "لا أستطيع".
+const NEGATION_AR: &[&str] = &["لا", "لن", "ما", "مش", "مو", "غير"];
+
+const FILE_NOUNS_AR: &[&str] = &[
+    "ملف", "ملفات", "مجلد", "مجلدات", "فولدر", "فولدرات", "مستند", "مستندات", "وثيقه", "وثائق", "صوره", "صور",
+    "فيديو", "فيديوهات", "تنزيلات", "جهاز", "قرص", "كمبيوتر", "لابتوب", "تخزين",
+];
+
+/// Endings that put an object on a verb or noun: احذفها, حذفه.
+const OBJECT_ENDING_AR: &[&str] = &["ها", "هم", "هن", "ه"];
+
+/// Endings that say "for you": احذفلك.
+const FOR_YOU_ENDING_AR: &[&str] = &["لك", "لكم"];
+
+/// When a reply is a text the user asked for, its "I" is not the assistant.
+const WRITING_CUES: &[&str] = &[
+    "write", "draft", "compose", "rewrite", "email", "letter", "story", "poem", "essay", "paragraph", "message",
+    "اكتب", "اكتبي", "ايميل", "رساله", "قصه", "قصيده", "خطاب", "مقال", "صياغه", "صيغ",
+];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    Bare,
+    Object,
+    ForYou,
+}
+
+/// How `word` is one of `list`, if it is: alone, with an object ending, or with
+/// "for you". A prefix such as و or ب in front is allowed.
+fn ending(word: &str, list: &[&str]) -> Option<Ending> {
+    forms(word).iter().find_map(|stem| {
+        list.iter().find_map(|form| {
+            let rest = stem.strip_prefix(form)?;
+            if rest.is_empty() {
+                Some(Ending::Bare)
+            } else if OBJECT_ENDING_AR.contains(&rest) {
+                Some(Ending::Object)
+            } else if FOR_YOU_ENDING_AR.contains(&rest) {
+                Some(Ending::ForYou)
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// An Arabic file noun, with a prefix (بالملفات) or a possessive ending (ملفاتك).
+fn arabic_file_noun(word: &str) -> bool {
+    forms(word).iter().any(|stem| {
+        FILE_NOUNS_AR.contains(stem)
+            || ["ك", "ي", "ه", "ها", "هم", "كم", "نا"]
+                .iter()
+                .any(|end| stem.strip_suffix(end).is_some_and(|s| FILE_NOUNS_AR.contains(&s)))
+    })
+}
+
+fn english_claim(words: &[&str], tools: &[&str]) -> Option<String> {
+    for i in 0..words.len() {
+        let (after, done) = match (starts_with_any(words, i, CLAIM_EN), starts_with_any(words, i, DONE_EN)) {
+            (Some(n), _) => (i + n, false),
+            (None, Some(n)) => (i + n, true),
+            (None, None) => continue,
+        };
+        let verb_at = after + words[after..].iter().take(3).take_while(|w| CLAIM_FILLER_EN.contains(w)).count();
+        let Some(word) = words.get(verb_at) else { continue };
+        let next = &words[verb_at + 1..];
+        for ability in ABILITIES.iter().filter(|a| !a.tool.is_some_and(|t| tools.contains(&t))) {
+            let is_verb = ability
+                .verbs_en
+                .iter()
+                .any(|[base, ing, past]| if done { word == past } else { word == base || word == ing });
+            let object = next.iter().take(3).any(|w| {
+                FILE_NOUNS_EN.contains(w) || (ability.tool.is_none() && PRONOUNS_EN.contains(w))
+            });
+            if is_verb && object {
+                return Some(words[i..(verb_at + 4).min(words.len())].join(" "));
+            }
+        }
+    }
+    None
+}
+
+fn starts_with_any(words: &[&str], i: usize, starts: &[&[&str]]) -> Option<usize> {
+    starts.iter().find(|s| words[i..].starts_with(s)).map(|s| s.len())
+}
+
+fn arabic_claim(words: &[&str], tools: &[&str]) -> Option<String> {
+    let missing = || ABILITIES.iter().filter(|a| !a.tool.is_some_and(|t| tools.contains(&t)));
+    let acts_on_files = |at: usize, ending: Ending| {
+        ending == Ending::Object || words[at + 1..].iter().take(3).any(|w| arabic_file_noun(w))
+    };
+    for i in 0..words.len() {
+        let word = words[i];
+        // سأحذف and هحذف (Egyptian) are claims by themselves.
+        let fused = word.strip_prefix('س').map(str::to_string).or_else(|| word.strip_prefix('ه').map(|v| format!("ا{v}")));
+        if let Some(verb) = fused {
+            let hit = missing().any(|a| ending(&verb, a.verbs_ar).is_some_and(|e| acts_on_files(i, e)));
+            if hit {
+                return Some(words[i..(i + 4).min(words.len())].join(" "));
+            }
+        }
+        // "تم" at the start of the clause says it was done.
+        let done = i < 2 && word == "تم";
+        if !done && !CLAIM_AR.contains(&word) || i > 0 && NEGATION_AR.contains(&words[i - 1]) {
+            continue;
+        }
+        let verb_at = i + 1 + words[i + 1..].iter().take(3).take_while(|w| CLAIM_FILLER_AR.contains(w)).count();
+        let Some(verb) = words.get(verb_at) else { continue };
+        let hit = missing().any(|a| {
+            let by_verb = if done { None } else { ending(verb, a.verbs_ar) };
+            by_verb.or_else(|| ending(verb, a.nouns_ar)).is_some_and(|e| acts_on_files(verb_at, e))
+        });
+        if hit {
+            return Some(words[i..(verb_at + 4).min(words.len())].join(" "));
+        }
+    }
+    None
+}
+
+/// Finds the first place where a reply says or offers that the assistant can
+/// change, search or list files, when no tool in `tools` does it. `tools` are
+/// the names of the tools offered in this conversation. Advice to the user
+/// ("you can delete old files", "I recommend organizing them") and
+/// explanations ("I can show you how to delete files") are not claims: a claim
+/// is "I" with can, will, let me, want me to or a past verb, then the verb and
+/// a file word within three words. A request to write or translate is not
+/// checked, because the "I" in the text is not the assistant. Returns the words
+/// of the claim.
+pub fn claims_missing_ability(user_text: &str, reply: &str, tools: &[&str]) -> Option<String> {
+    let user = normalize(user_text);
+    if asks_to_translate(user_text) || has_term(&split_words(&user), WRITING_CUES) {
+        return None;
+    }
+    let text = normalize(&strip_quoted(reply));
+    text.split(['.', '!', '?', '؟', '؛', ';', '\n', ':', ',', '،']).find_map(|clause| {
+        let words = split_words(clause);
+        english_claim(&words, tools).or_else(|| arabic_claim(&words, tools))
+    })
 }
 
 /// True when the reply is in the wrong one of the two scripts for the request.
@@ -846,5 +1074,180 @@ mod tests {
         for user in ["Translate to Arabic: good morning", "translate good morning", "Say good morning in Arabic", "Write it in arabic"] {
             assert!(!replied_in_wrong_language(user, "صباح الخير"), "{user}");
         }
+    }
+
+    #[test]
+    fn chinese_punctuation_and_rare_ideographs_in_arabic_are_reported() {
+        for reply in [
+            "الواي فاي，هو شبكة لاسلكية",
+            "الفرق（بين）الاثنين",
+            "الفرق بين الاثنين。",
+            "الواي فاي是一种شبكة",
+            "هذا ＷｉＦｉ جيد",
+            "شبكة \u{2F800}",
+            "شبكة \u{30000}",
+        ] {
+            let issues = check_reply(reply, Language::Arabic);
+            assert!(!issues.is_empty() && issues.iter().all(|i| i.script == Script::Cjk), "{reply}: {issues:?}");
+            assert!(!check_reply(reply, Language::English).is_empty(), "{reply}");
+        }
+        // Western punctuation and full-width digits are not reported.
+        assert!(check_reply("الواي فاي، هو (شبكة): نعم؟ «تمام» ٢٠٢٦", Language::Arabic).is_empty());
+        assert!(check_reply("الكود ２０٢٦", Language::Arabic).is_empty());
+    }
+
+    const ALL_TOOLS: &[&str] =
+        &["open_app", "list_files", "search_files", "create_reminder", "schedule_meeting", "set_language"];
+
+    fn claim(user: &str, reply: &str) -> Option<String> {
+        claims_missing_ability(user, reply, ALL_TOOLS)
+    }
+
+    #[test]
+    fn claims_to_change_files_are_found_in_english() {
+        for reply in [
+            "I can delete the old files for you.",
+            "Sure! I can also organize your downloads folder.",
+            "I can help you organize your files into folders.",
+            "I'll move those documents to a new folder.",
+            "Let me clean up your desktop.",
+            "I'm able to rename the files in bulk.",
+            "I can help you with sorting the photos by date.",
+            "Do you want me to delete them?",
+            "Would you like me to organize your documents?",
+            "You can ask me to remove duplicate files.",
+            "I have deleted the files you listed.",
+            "I just moved your folder to the desktop.",
+            "I can't open that app, but I can delete your files.",
+            "I will definitely compress the folder.",
+            "Shall I archive the videos?",
+        ] {
+            assert!(claim("my disk is full", reply).is_some(), "{reply}");
+        }
+    }
+
+    #[test]
+    fn advice_and_explanations_are_not_claims_in_english() {
+        for reply in [
+            "You can delete old files to free up space.",
+            "I recommend organizing your files into folders by project.",
+            "I suggest you delete duplicates and empty the trash.",
+            "To organize your files, create a folder for each project.",
+            "I can't delete files, but you can do it from the file manager.",
+            "I cannot move your files. I can only explain how.",
+            "I can show you how to delete files safely.",
+            "I can explain how to organize your documents.",
+            "I can help you decide which files to delete.",
+            "Let me know if you want tips on sorting your photos.",
+            "Let me explain how to copy files to a USB drive.",
+            "Do you want me to explain how to delete a file?",
+            "I would back up your documents before cleaning the disk.",
+            "I can help you organize your thoughts.",
+            "I can sort the list alphabetically.",
+            "I can remove the second paragraph.",
+            "I can copy this text into a table.",
+            "Deleting files you do not need is a good habit.",
+            "You should move your photos to an external drive.",
+            "I moved on to the next question.",
+            "I can open the music app.",
+            "I can set a reminder.",
+            "To free up space, I'd delete large files you no longer need.",
+            "I can help you plan a cleanup: first sort your files by size.",
+            "I can tell you which files are safe to delete.",
+            "I can help you write a script that deletes the files.",
+            "I can't see your files, so you should sort them yourself.",
+            "I can summarize the document for you.",
+        ] {
+            assert_eq!(claim("my disk is full", reply), None, "{reply}");
+        }
+    }
+
+    #[test]
+    fn claims_to_change_files_are_found_in_arabic() {
+        for reply in [
+            "أقدر أحذف الملفات القديمة لك.",
+            "يمكنني ترتيب ملفاتك في مجلدات.",
+            "أستطيع نقل المستندات إلى مجلد جديد.",
+            "سأحذف الملفات المكررة الآن.",
+            "ساحذفها لك.",
+            "هرتب الفولدرات بتاعتك.",
+            "هحذفها دلوقتي.",
+            "أقدر أساعدك في تنظيف الجهاز وحذف الملفات.",
+            "تقدر تطلب مني حذف الملفات.",
+            "تريد مني أن أنظم المجلدات؟",
+            "خلني أرتب الصور.",
+            "راح انقل الملفات لك.",
+            "تم حذف الملفات القديمة.",
+            "أقدر أحذفلك الملفات.",
+            "رح أنسخها للفلاشة.",
+            "ممكن اقدر امسح ملفاتك القديمة.",
+        ] {
+            assert!(claim("جهازي ممتلئ", reply).is_some(), "{reply}");
+        }
+    }
+
+    #[test]
+    fn advice_and_explanations_are_not_claims_in_arabic() {
+        for reply in [
+            "يمكنك حذف الملفات القديمة لتوفير مساحة.",
+            "أنصحك بترتيب ملفاتك في مجلدات حسب المشروع.",
+            "احذف الملفات المكررة وأفرغ سلة المحذوفات.",
+            "تقدر تنقل الصور إلى قرص خارجي.",
+            "لا أستطيع حذف الملفات، لكن يمكنك فعل ذلك من مدير الملفات.",
+            "لا أقدر أنقل ملفاتك.",
+            "أقدر أشرح لك كيف تحذف الملفات.",
+            "أقدر أساعدك في اختيار الملفات التي تريد حذفها.",
+            "أقدر أرتب لك الأفكار.",
+            "يمكنني ترتيب القائمة أبجديًا.",
+            "سأشرح لك طريقة ترتيب الملفات.",
+            "يفضل حذف الملفات المؤقتة كل شهر.",
+            "حذف الملفات القديمة عادة جيدة.",
+            "إذا حذفت ملفًا فسيذهب إلى سلة المحذوفات.",
+            "سأفتح تطبيق الموسيقى.",
+            "ساعدك في كتابة الرسالة.",
+            "أقدر أعطيك نصائح لحذف الملفات القديمة.",
+            "أقدر أكتب لك سكربت يحذف الملفات.",
+            "راح أشرح لك كيف تنقل الملفات.",
+            "أنا ما أقدر أحذف الملفات بس تقدر تحذفها انت.",
+            "مش هقدر احذف ملفاتك.",
+            "يمكنني تلخيص المستند لك.",
+            "هنا بعض النصائح لتنظيم الملفات.",
+        ] {
+            assert_eq!(claim("جهازي ممتلئ", reply), None, "{reply}");
+        }
+    }
+
+    #[test]
+    fn a_claim_is_only_missing_when_no_tool_does_it() {
+        let reply = "I can search your files for it.";
+        assert_eq!(claim("find my report", reply), None);
+        assert!(claims_missing_ability("find my report", reply, &["open_app", "list_files"]).is_some());
+        let reply = "أقدر أبحث عن الملف لك.";
+        assert_eq!(claim("دور على التقرير", reply), None);
+        assert!(claims_missing_ability("دور على التقرير", reply, &[]).is_some());
+        // The writer model is offered no tools, so it may not claim to list files either.
+        assert!(claims_missing_ability("hi", "I can show you the files in Documents.", &[]).is_some());
+        assert_eq!(claim("hi", "I can show you the files in Documents."), None);
+        // Nothing offers a way to delete, whatever else is offered.
+        assert!(claim("hi", "I can delete your files.").is_some());
+    }
+
+    #[test]
+    fn text_the_user_asked_for_is_not_checked() {
+        let reply = "Hi team, I have moved the files to the shared folder.";
+        assert_eq!(claim("write an email to my team about the files", reply), None);
+        assert_eq!(claim("اكتب رسالة لفريقي", "مرحبا، لقد نقلت الملفات، تم حذف الملفات القديمة."), None);
+        assert_eq!(claim("translate to French", "I can delete the files."), None);
+        assert!(claim("what should I do?", reply).is_some());
+        // A quoted sentence is not the assistant speaking.
+        assert_eq!(claim("hi", "A scammer might say \"I can delete your files\" to scare you."), None);
+    }
+
+    #[test]
+    fn the_claim_is_returned_for_review() {
+        let english = claim("hi", "Sure! I can also organize your downloads folder.");
+        assert_eq!(english.as_deref(), Some("i can also organize your downloads folder"));
+        let arabic = claim("hi", "يمكنني ترتيب ملفاتك في مجلدات.");
+        assert_eq!(arabic.as_deref(), Some("يمكنني ترتيب ملفاتك في مجلدات"));
     }
 }
