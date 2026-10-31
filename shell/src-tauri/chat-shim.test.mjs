@@ -75,7 +75,7 @@ test('a bad body is a 400 and never reaches the core', async () => {
   assert.equal(called, false);
 });
 
-test('the held-action, calendar and hardware requests reach the core with only their own fields', async () => {
+test('the held-action and calendar requests reach the core with only their own fields', async () => {
   const sent = [];
   const { window } = load(async (_command, args) => {
     sent.push(JSON.parse(args.line));
@@ -88,7 +88,6 @@ test('the held-action, calendar and hardware requests reach the core with only t
     { upcoming: true },
     { upcoming: true, from: '2026-11-01' },
     { delete_event: 'uid-1' },
-    { hardware: true },
   ]) {
     const response = await window.fetch('/chat', post(body));
     assert.equal(response.status, 200, JSON.stringify(body));
@@ -100,7 +99,6 @@ test('the held-action, calendar and hardware requests reach the core with only t
     { id: 4, upcoming: true },
     { id: 5, upcoming: true, from: '2026-11-01' },
     { id: 6, delete_event: 'uid-1' },
-    { id: 7, hardware: true },
   ]);
 });
 
@@ -110,8 +108,19 @@ test('a caller cannot choose the id', async () => {
     ids.push(JSON.parse(args.line).id);
     return '{}';
   });
-  await window.fetch('/chat', post({ id: 99, hardware: true }));
+  await window.fetch('/chat', post({ id: 99, upcoming: true }));
   assert.deepEqual(ids, [1]);
+});
+
+test('hardware is not a request: alone it is a 400, and beside another kind it is dropped', async () => {
+  const sent = [];
+  const { window } = load(async (_command, args) => {
+    sent.push(JSON.parse(args.line));
+    return '{}';
+  });
+  assert.equal((await window.fetch('/chat', post({ hardware: true }))).status, 400);
+  assert.equal((await window.fetch('/chat', post({ text: 'hi', language: 'en', hardware: true }))).status, 200);
+  assert.deepEqual(sent, [{ id: 1, text: 'hi', language: 'en' }]);
 });
 
 test('a body that mixes kinds or has a wrong field is a 400', async () => {
@@ -121,14 +130,14 @@ test('a body that mixes kinds or has a wrong field is a 400', async () => {
     return '{}';
   });
   for (const body of [
-    { hardware: true, upcoming: true },
+    { delete_event: 'uid-1', upcoming: true },
     { text: 'hi', language: 'en', confirm: 'abc' },
     { cancel: 'abc', time: '11:00' },
     { confirm: '' },
     { confirm: 5 },
     { upcoming: false },
     { upcoming: true, from: 3 },
-    { hardware: 'yes' },
+    { hardware: true },
     { delete_event: '' },
     { language: 'en' },
     [],

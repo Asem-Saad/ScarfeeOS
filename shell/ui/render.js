@@ -224,6 +224,12 @@ function fileName(path) {
   return parts.length > 0 ? parts[parts.length - 1] : displayPath(path);
 }
 
+// The text to show for a path or name: the core's `display_*` form (control characters written out) when it
+// sent one, else the real value. The real `path` is never changed.
+function shown(display, real) {
+  return typeof display === 'string' ? display : real;
+}
+
 // File names are never digit-shaped. They go to the panel as plain strings in a `files` block, a name and
 // the folder it is in (null when the heading already says it).
 function describeFiles(heading, none, entries, result, basePath, t, settings) {
@@ -238,7 +244,8 @@ function describeFiles(heading, none, entries, result, basePath, t, settings) {
       items: list.slice(0, MAX_LISTED).map((entry) => {
         const e = entry && typeof entry === 'object' ? entry : {};
         const path = e.path === undefined || e.path === null ? '' : String(e.path);
-        return { name: fileName(path), folder: folderOf(path, basePath), label: entryLabel(e.kind, t) };
+        const shownPath = shown(e.display_path, path);
+        return { name: shown(e.display_name, fileName(shownPath)), folder: folderOf(shownPath, basePath), label: entryLabel(e.kind, t) };
       }),
     });
     if (list.length > MAX_LISTED) {
@@ -307,9 +314,9 @@ function describeResult(r, t, settings) {
     switch (result.type) {
       case 'listing':
         return describeFiles(
-          fill(t('assistant-result-listing'), { path: displayPath(result.path) }),
-          fill(t('assistant-result-listing-empty'), { path: displayPath(result.path) }),
-          result.entries, result, result.path === undefined || result.path === null ? undefined : String(result.path), t, settings);
+          fill(t('assistant-result-listing'), { path: displayPath(shown(result.display_path, result.path)) }),
+          fill(t('assistant-result-listing-empty'), { path: displayPath(shown(result.display_path, result.path)) }),
+          result.entries, result, result.path === undefined || result.path === null ? undefined : String(shown(result.display_path, result.path)), t, settings);
       case 'search':
         return describeFiles(
           fill(t('assistant-result-search'), { query: args.query }),

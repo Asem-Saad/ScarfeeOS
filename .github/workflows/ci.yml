@@ -51,6 +51,8 @@ jobs:
           node-version: 24
       - name: Panel and dev bridge
         run: node --test shell/ui/*.test.js shell/ui/*.test.mjs
+      - name: Installer page and its bridge
+        run: node --test shell/installer/*.test.js shell/installer/*.test.mjs
       - name: Tauri chat shim
         run: node --test shell/src-tauri/chat-shim.test.mjs
 

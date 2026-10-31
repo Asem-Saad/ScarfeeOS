@@ -252,6 +252,29 @@ const found = (matches, listing) => render(listing
   ? run('list_files', { path: listing }, { ok: true, type: 'listing', path: listing, entries: matches.map((path) => ({ path, kind: 'file' })), truncated: false })
   : run('search_files', { query: 'x' }, { ok: true, type: 'search', matches: matches.map((path) => ({ path, kind: 'file' })), truncated: false, unreadable: 0 }))[1].items;
 
+test('a name with a right-to-left override is shown from display_name and display_path, and the real path is untouched', () => {
+  const real = '/home/user/Downloads/report\u202Etxt.exe';
+  const entry = { path: real, display_path: '/home/user/Downloads/report<U+202E>txt.exe', display_name: 'report<U+202E>txt.exe', kind: 'file' };
+  const listing = { ok: true, type: 'listing', path: '/home/user/Downloads', display_path: '/home/user/Downloads', truncated: false, entries: [entry] };
+  const blocks = render(run('list_files', { path: '/home/user/Downloads' }, listing));
+  assert.deepStrictEqual(blocks[1].items, [{ name: 'report<U+202E>txt.exe', folder: null, label: null }]);
+  const search = render(run('search_files', { query: 'report' }, { ok: true, type: 'search', matches: [entry], truncated: false, unreadable: 0 }));
+  assert.deepStrictEqual(search[1].items, [{ name: 'report<U+202E>txt.exe', folder: '~/Downloads', label: null }]);
+  const inner = { path: '/d/dir\u2067x/a.txt', display_path: '/d/dir<U+2067>x/a.txt', display_name: 'a.txt', kind: 'file' };
+  const folder = render(run('list_files', { path: '/d/dir\u2067x' }, { ok: true, type: 'listing', path: '/d/dir\u2067x', display_path: '/d/dir<U+2067>x', entries: [inner], truncated: false }));
+  assert.strictEqual(folder[0].text, 'The contents of /d/dir<U+2067>x:');
+  assert.deepStrictEqual(folder[1].items, [{ name: 'a.txt', folder: null, label: null }]);
+  for (const out of [blocks, search, folder]) {
+    assert.ok(!/[\u202A-\u202E\u2066-\u2069]/.test(JSON.stringify(out)), JSON.stringify(out));
+  }
+  assert.strictEqual(entry.path, real);
+});
+
+test('without display_name and display_path the real path is used, as before', () => {
+  const blocks = render(run('list_files', { path: '/d' }, { ok: true, type: 'listing', path: '/d', truncated: false, entries: [{ path: '/d/a.txt', kind: 'file' }] }));
+  assert.deepStrictEqual(blocks[1].items, [{ name: 'a.txt', folder: null, label: null }]);
+});
+
 test('a Windows \\\\?\\ prefix is left out of what is shown, and nothing else about the path changes', () => {
   const [a, b, c] = found([
     '\\\\?\\D:\\Users\\sam\\Documents\\report.txt',

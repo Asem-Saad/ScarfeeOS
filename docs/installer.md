@@ -29,9 +29,12 @@ The installer checks the hardware, recommends a tier and lets the user choose. A
 - If the chosen tier is more than the hardware can handle, the installer warns the user but does not block the choice.
 - All tiers share the code-based features, such as date handling, so they do not depend on the model.
 
-## Later steps (planned)
+## Steps
+The installer shows these screens in this order:
 1. Language
-2. Disk and account setup
-3. Hardware check and AI tier selection
+2. AI tier selection, after the hardware check
+3. Disk and account setup (a marked placeholder for now: nothing is written to a disk yet)
+
+Planned after these:
 4. Optional: connect Claude (API key), or stay local-only
 5. Finish

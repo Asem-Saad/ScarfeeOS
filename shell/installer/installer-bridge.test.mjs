@@ -28,11 +28,18 @@ test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const received = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
+// The cookie the installer page hands out when it loads; withBridge takes it for the bridge it starts, as the page does.
+let cookie = '';
+const cookieOf = (res) => /^scarfeeos_dev_token=[0-9a-f]+/.exec(res.headers.get('set-cookie') || '')?.[0];
+
 async function withBridge(body) {
   fs.rmSync(log, { force: true });
   const bridge = createBridge({ corePath: fakeCore, port: 0 });
   const port = await bridge.start();
   try {
+    const page = await fetch(`http://127.0.0.1:${port}/installer/`);
+    cookie = cookieOf(page);
+    assert.ok(cookie, 'the installer page must hand out the cookie');
     await body(`http://127.0.0.1:${port}`);
   } finally {
     await bridge.stop();
@@ -40,7 +47,7 @@ async function withBridge(body) {
 }
 
 const post = (base, body) =>
-  fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(body) });
 
 test('the installer page and its files are served read-only, from shell/installer/', async () => {
   await withBridge(async (base) => {
@@ -107,17 +114,27 @@ test('unknown extra fields are dropped before a request reaches the core', async
 
 test('/chat takes only POST with a JSON body, so a page or a form on another site cannot send it', async () => {
   await withBridge(async (base) => {
-    assert.strictEqual((await fetch(`${base}/chat`)).status, 405);
-    const plain = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{"hardware":true}' });
+    assert.strictEqual((await fetch(`${base}/chat`, { headers: { Cookie: cookie } })).status, 405);
+    const plain = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'text/plain', Cookie: cookie }, body: '{"hardware":true}' });
     assert.strictEqual(plain.status, 415);
-    const form = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'hardware=true' });
+    const form = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie }, body: 'hardware=true' });
     assert.strictEqual(form.status, 415);
     const foreign = await fetch(`${base}/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Origin: 'http://evil.example' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'http://evil.example' },
       body: '{"hardware":true}',
     });
     assert.strictEqual(foreign.status, 403);
+    assert.deepStrictEqual(received(), []);
+  });
+});
+
+test('/chat refuses a request without the page cookie, even a well-formed hardware check', async () => {
+  await withBridge(async (base) => {
+    for (const headers of [{}, { Cookie: 'scarfeeos_dev_token=wrong' }]) {
+      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: '{"hardware":true}' });
+      assert.strictEqual(res.status, 403);
+    }
     assert.deepStrictEqual(received(), []);
   });
 });

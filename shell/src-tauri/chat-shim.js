@@ -10,9 +10,9 @@
     return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
   }
 
-  // The same requests the dev bridge lets through (see ../dev-bridge.mjs): exactly one kind, with only
+  // The requests the panel may send (see src/request.rs): exactly one kind, with only
   // its own extra fields. Only these fields reach the core, and the id is always the shim's own.
-  const KINDS = ['text', 'confirm', 'cancel', 'upcoming', 'delete_event', 'hardware'];
+  const KINDS = ['text', 'confirm', 'cancel', 'upcoming', 'delete_event'];
   const EXTRAS = { text: ['language'], confirm: ['time'], upcoming: ['from'] };
 
   function requestFields(body) {
@@ -39,8 +39,6 @@
         return body.upcoming === true && (!given('from') || text('from'))
           ? given('from') ? { upcoming: true, from: body.from } : { upcoming: true }
           : null;
-      case 'hardware':
-        return body.hardware === true ? { hardware: true } : null;
       case 'confirm':
         return text('confirm') && body.confirm && (!given('time') || text('time'))
           ? given('time') ? { confirm: body.confirm, time: body.time } : { confirm: body.confirm }
@@ -63,7 +61,7 @@
         kind: 'error',
         message:
           'expected {"text": string, "language": "en" | "ar"}, {"confirm": action id, "time"?: string}, {"cancel": action id}, ' +
-          '{"upcoming": true, "from"?: string}, {"delete_event": uid} or {"hardware": true}',
+          '{"upcoming": true, "from"?: string} or {"delete_event": uid}',
       });
     }
     const id = nextId++;
