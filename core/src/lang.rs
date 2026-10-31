@@ -1,4 +1,4 @@
-use crate::datetime::{hour_marker, names_prayer, weekday_at};
+use crate::datetime::{hour_marker, minute_offset, names_prayer, weekday_at};
 
 /// Languages ScarfeeOS supports as main languages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,11 +287,19 @@ fn is_time_word(words: &[String], i: usize) -> bool {
         || (word == "يوم" && prev == Some("كل"))
 }
 
-/// Which words are part of a time: the time words, and the links before them.
+/// Which words are part of a time: the time words, the minutes after an hour
+/// ("ونص" in "الساعة 5 ونص"), and the links before them.
 fn time_mask(words: &[String]) -> Vec<bool> {
+    let mut minutes = vec![false; words.len()];
+    for i in 0..words.len() {
+        if let Some((_, span)) = minute_offset(words, i) {
+            minutes[span].fill(true);
+        }
+    }
     let mut time = vec![false; words.len()];
     for i in (0..words.len()).rev() {
-        time[i] = is_time_word(words, i)
+        time[i] = minutes[i]
+            || is_time_word(words, i)
             || ((LINKS.contains(&words[i].as_str()) || hour_marker(words, i)) && time.get(i + 1).copied().unwrap_or(false));
     }
     time
@@ -640,8 +648,8 @@ mod tests {
             ("اتصل بالبنك بكرة ساعة الخامسة", "اتصل بالبنك"),
             ("اتصل بالبنك بكرة ساعة الثانية عشرة", "اتصل بالبنك"),
             ("ساعة 5", ""),
-            ("اتصل بالبنك ساعة 5 ونص", "اتصل بالبنك ونص"),
-            ("اتصل بالبنك الساعة 5 ونص", "اتصل بالبنك ونص"),
+            ("اتصل بالبنك ساعة 5 ونص", "اتصل بالبنك"),
+            ("اتصل بالبنك الساعة 5 ونص", "اتصل بالبنك"),
             ("اتصل بالبنك بعد ساعة", "اتصل بالبنك بعد ساعة"),
             ("اتصل بالبنك بعد 5 ساعات", "اتصل بالبنك بعد 5 ساعات"),
             ("اتصل بالبنك ساعة واحدة", "اتصل بالبنك ساعة واحدة"),
@@ -684,8 +692,8 @@ mod tests {
             ("ذكرني اتصل بالبنك بكرة الساعة الخامسة", "2026-10-31T05:00:00", true, "اتصل بالبنك"),
             ("ذكرني اتصل بالبنك ساعة 5", "2026-10-30T05:00:00", true, "اتصل بالبنك"),
             ("ذكرني اتصل بالبنك الساعة 5", "2026-10-30T05:00:00", true, "اتصل بالبنك"),
-            ("ذكرني اتصل بالبنك ساعة 5 ونص", "2026-10-30T05:00:00", true, "اتصل بالبنك ونص"),
-            ("ذكرني اتصل بالبنك الساعة 5 ونص", "2026-10-30T05:00:00", true, "اتصل بالبنك ونص"),
+            ("ذكرني اتصل بالبنك ساعة 5 ونص", "2026-10-30T05:30:00", true, "اتصل بالبنك"),
+            ("ذكرني اتصل بالبنك الساعة 5 ونص", "2026-10-30T05:30:00", true, "اتصل بالبنك"),
         ] {
             let got = run(text).unwrap_or_else(|| panic!("{text}"));
             assert_eq!((got.0.as_str(), got.1, got.2.as_str()), (time, ambiguous, task), "{text}");
@@ -697,6 +705,90 @@ mod tests {
             "ذكرني اشرب مي ساعة واحدة",
             "ذكرني اشرب مي كل ساعة",
         ] {
+            assert!(run(text).is_none(), "{text}");
+            assert_eq!(without_command_and_time(text), text.strip_prefix("ذكرني ").unwrap(), "{text}");
+        }
+    }
+
+    #[test]
+    fn half_and_quarter_hours_are_removed_with_the_time_and_other_words_stay() {
+        for (text, expected) in [
+            ("أكلم إسلام الساعة 5 ونص", "أكلم إسلام"),
+            ("الساعة 5 ونص أكلم إسلام", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 و نص", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 ونصف", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 والنص", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 وربع", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 و ربع", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 والربع", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 وتلت", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 وثلث", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 الا ربع", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 إلا ربع", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 الا تلت", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 إلا ثلث", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 ونص وخمسة", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 الا خمسة", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 ونص العصر", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 5 العصر ونص", "أكلم إسلام"),
+            ("أكلم إسلام بكرا الساعة ٧ الا ربع مساء", "أكلم إسلام"),
+            ("أكلم إسلام بكرا الساعة ٧ مساء الا ربع", "أكلم إسلام"),
+            ("أكلم إسلام ساعة الخامسة ونص", "أكلم إسلام"),
+            ("أكلم إسلام الساعة الثانية عشرة الا ربع", "أكلم إسلام"),
+            ("أكلم إسلام الساعة 12 الا ربع بالليل", "أكلم إسلام"),
+            // Not after an hour, or not the word with و: they are the user's words.
+            ("اقرا نص الكتاب الساعة 5", "اقرا نص الكتاب"),
+            ("الساعة 5 اقرا نص الكتاب", "اقرا نص الكتاب"),
+            ("الساعة 5 نص الكتاب", "نص الكتاب"),
+            ("اقرا نص ساعة", "اقرا نص ساعة"),
+            ("اقرا بعد ربع ساعة", "اقرا بعد ربع ساعة"),
+            ("اقرا ونص الكتاب", "اقرا ونص الكتاب"),
+            // A unit makes the words a duration.
+            ("الساعة 5 ونص ساعة", "ونص ساعة"),
+        ] {
+            assert_eq!(without_time_words(text, false), expected, "{text}");
+        }
+        assert_eq!(without_time_words("أكلم إسلام الساعة 5 ونص", true), "أكلم إسلام");
+        assert_eq!(without_time_words("أكلم الساعة 5 ونص إسلام", true), "أكلم الساعة 5 ونص إسلام");
+    }
+
+    #[test]
+    fn the_reminder_path_reads_half_and_quarter_hours() {
+        use crate::datetime::Date;
+        use crate::tools::{resolve_call, Resolution, ToolCall};
+        let today = Date::new(2026, 10, 30);
+        let run = |user_text: &str| {
+            let proposed = ToolCall::CreateReminder { text: "x".into(), time: "x".into(), repeat: None };
+            let (call, ambiguous) = match resolve_call(user_text, today, proposed) {
+                Resolution::Ready(call) => (call, false),
+                Resolution::NeedsClarification(call) => (call, true),
+                _ => return None,
+            };
+            match call {
+                ToolCall::CreateReminder { time, .. } => Some((time, ambiguous, without_command_and_time(user_text))),
+                _ => None,
+            }
+        };
+        for (text, time, ambiguous, task) in [
+            // The case that was reported: the half hour was left in the text at 05:00.
+            ("ذكرني يوم التلات ساعة 5 ونص أكلم إسلام", "2026-11-03T05:30:00", true, "أكلم إسلام"),
+            ("ذكرني يوم التلات الساعة 5 ونص أكلم إسلام", "2026-11-03T05:30:00", true, "أكلم إسلام"),
+            ("فكرني بكرة الساعة 5 ونص العصر اتصل بالبنك", "2026-10-31T17:30:00", false, "اتصل بالبنك"),
+            ("فكرني بكرة الساعة 5 العصر ونص اتصل بالبنك", "2026-10-31T17:30:00", false, "اتصل بالبنك"),
+            ("فكرني بكرة ساعة 5 الا ربع العصر اتصل بالبنك", "2026-10-31T16:45:00", false, "اتصل بالبنك"),
+            ("ابغاك تذكرني بكرا الساعة ٧ الا ربع مساء اتصل بالبنك", "2026-10-31T18:45:00", false, "اتصل بالبنك"),
+            ("ابغاك تذكرني بكرا الساعة ٩ وثلث الصبح اتصل بالبنك", "2026-10-31T09:20:00", false, "اتصل بالبنك"),
+            ("ابغاك تذكرني بكرا الساعة ٣ وربع العصر اتصل بالبنك", "2026-10-31T15:15:00", false, "اتصل بالبنك"),
+            ("ذكرني الساعة 12 الا ربع بالليل اتصل بالبنك", "2026-10-30T23:45:00", false, "اتصل بالبنك"),
+            ("ذكرني اتصل بالبنك الساعة 5 ونص وخمسة العصر", "2026-10-30T17:35:00", false, "اتصل بالبنك"),
+            // A half hour word with no hour before it is part of the task.
+            ("ذكرني الساعة 5 اقرا نص الكتاب", "2026-10-30T05:00:00", true, "اقرا نص الكتاب"),
+        ] {
+            let got = run(text).unwrap_or_else(|| panic!("{text}"));
+            assert_eq!((got.0.as_str(), got.1, got.2.as_str()), (time, ambiguous, task), "{text}");
+        }
+        // Durations are not times: no date, so the caller asks, and the words stay.
+        for text in ["ذكرني اشرب مي بعد نص ساعة", "ذكرني اشرب مي بعد ربع ساعة"] {
             assert!(run(text).is_none(), "{text}");
             assert_eq!(without_command_and_time(text), text.strip_prefix("ذكرني ").unwrap(), "{text}");
         }

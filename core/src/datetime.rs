@@ -1,6 +1,8 @@
 //! Resolves relative dates and times in English and Arabic text.
 //! Models get these wrong, so the calendar arithmetic stays in code.
 
+use std::ops::Range;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Date {
     pub year: i32,
@@ -264,6 +266,70 @@ pub(crate) fn hour_marker(words: &[String], i: usize) -> bool {
     !(counted_number || matches!(prev, "بعد" | "عقب" | "كل" | "after" | "every" | "نص" | "نصف" | "ربع" | "ثلث"))
 }
 
+/// Minutes added by a fraction word after و: نص and نصف are half, ربع a
+/// quarter, تلت and ثلث a third.
+fn fraction_minutes(word: &str) -> Option<i32> {
+    match word {
+        "نص" | "نصف" | "النص" | "النصف" => Some(30),
+        "ربع" | "الربع" => Some(15),
+        "تلت" | "ثلث" | "التلت" | "الثلث" => Some(20),
+        _ => None,
+    }
+}
+
+/// The word after the و at `words[p]`, with و joined to it (ونص) or apart
+/// (و نص), and how many words that used.
+fn after_and(words: &[String], p: usize) -> Option<(&str, usize)> {
+    match words.get(p)?.as_str() {
+        "و" => Some((words.get(p + 1)?.as_str(), 2)),
+        word => Some((word.strip_prefix('و')?, 1)),
+    }
+}
+
+/// The minutes that the words at `words[p]` add to an hour, and how many words
+/// they are: "ونص" 30, "وربع" 15, "وتلت" 20, "ونص وخمسة" 35, "الا ربع" -15,
+/// "الا تلت" -20, "الا خمسة" -5.
+fn minutes_at(words: &[String], p: usize) -> Option<(i32, usize)> {
+    if let Some((rest, used)) = after_and(words, p) {
+        let plus = fraction_minutes(rest)?;
+        return Some(match after_and(words, p + used) {
+            Some(("خمسه", more)) if plus == 30 => (35, used + more),
+            _ => (plus, used),
+        });
+    }
+    if words.get(p)? != "الا" {
+        return None;
+    }
+    let minus = match words.get(p + 1)?.as_str() {
+        "ربع" => 15,
+        "تلت" | "ثلث" => 20,
+        "خمسه" => 5,
+        _ => return None,
+    };
+    Some((-minus, 2))
+}
+
+/// For the hour at `words[i]` (digits or an Arabic hour word, after الساعة or
+/// ساعة), the minutes that follow it, as in "الساعة 5 ونص" or "الساعة 5 الا ربع",
+/// and the words that say them. A day part may come first: "الساعة 5 العصر
+/// ونص". A unit after them makes the words a duration, as in "ونص ساعة".
+pub(crate) fn minute_offset(words: &[String], i: usize) -> Option<(i32, Range<usize>)> {
+    if i == 0 || !hour_marker(words, i - 1) {
+        return None;
+    }
+    let word = words[i].as_str();
+    let mut p = i + 1;
+    if arabic_hour(word).is_some() {
+        p += usize::from(words.get(p).is_some_and(|w| w == "عشره"));
+    } else if !(word.bytes().all(|b| b.is_ascii_digit()) && clock(word).is_some()) {
+        return None;
+    }
+    p += usize::from(words.get(p).is_some_and(|w| day_part_of(w).is_some()));
+    let (minutes, used) = minutes_at(words, p)?;
+    let end = p + used;
+    (!words.get(end).is_some_and(|w| COUNTED.contains(&w.as_str()))).then_some((minutes, p..end))
+}
+
 fn clock(word: &str) -> Option<(u32, u32)> {
     let (h, m) = word.split_once(':').unwrap_or((word, "0"));
     let time = (h.parse().ok()?, m.parse().ok()?);
@@ -281,6 +347,7 @@ pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
     let mut time = None;
     let mut part = None;
     let mut repeat = None;
+    let mut shift = 0;
 
     for (i, word) in words.iter().enumerate() {
         let next = words.get(i + 1).map(String::as_str);
@@ -316,11 +383,13 @@ pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
                     (2, Some("عشره")) => (12, 0),
                     _ => (hour, 0),
                 });
+                shift = minute_offset(&words, i).map_or(0, |(minutes, _)| minutes);
                 continue;
             }
         }
         if marked || next.is_some_and(|n| day_part_of(n).is_some()) {
             time = clock(word);
+            shift = minute_offset(&words, i).map_or(0, |(minutes, _)| minutes);
         }
     }
 
@@ -342,6 +411,15 @@ pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
         (Some((h, m)), None) => (Some((h, m)), 0, (1..=12).contains(&h)),
         (None, Some(p)) => (Some((p.default_hour(), 0)), 0, false),
         (None, None) => (None, 0, false),
+    };
+    // Minutes past or before the hour can cross midnight either way.
+    let (time, extra_day) = match time {
+        Some((h, m)) if shift != 0 => {
+            let total = i64::from(h * 60 + m) + i64::from(shift);
+            let day = total.rem_euclid(1440);
+            (Some(((day / 60) as u32, (day % 60) as u32)), extra_day + total.div_euclid(1440))
+        }
+        _ => (time, extra_day),
     };
     let date = today.add_days(offset.unwrap_or(0) + extra_day);
     Some(Resolved { date, time, repeat, ambiguous })
@@ -461,6 +539,89 @@ mod tests {
         assert_eq!(iso("غدا الساعة 12 مساء"), "2026-10-31T00:00:00");
         assert_eq!(iso("الساعة 12 مساء"), "2026-10-31T00:00:00");
         assert!(!resolve("بكرة الساعة 12 بالليل", TODAY).unwrap().ambiguous);
+    }
+
+    #[test]
+    fn half_and_quarter_hours_after_the_hour() {
+        for (text, time) in [
+            ("الساعة 5 ونص العصر", "2026-10-30T17:30:00"),
+            ("الساعة 5 العصر ونص", "2026-10-30T17:30:00"),
+            ("الساعة 5 ونصف العصر", "2026-10-30T17:30:00"),
+            ("الساعة 5 و نص العصر", "2026-10-30T17:30:00"),
+            ("الساعة 5 والنص العصر", "2026-10-30T17:30:00"),
+            ("الساعة 5 وربع العصر", "2026-10-30T17:15:00"),
+            ("الساعة 5 و ربع العصر", "2026-10-30T17:15:00"),
+            ("الساعة 5 والربع العصر", "2026-10-30T17:15:00"),
+            ("الساعة 5 وتلت العصر", "2026-10-30T17:20:00"),
+            ("الساعة 5 وثلث العصر", "2026-10-30T17:20:00"),
+            ("الساعة 5 الا ربع العصر", "2026-10-30T16:45:00"),
+            ("الساعة 5 إلا ربع العصر", "2026-10-30T16:45:00"),
+            ("الساعة 5 الا ربع", "2026-10-30T04:45:00"),
+            ("الساعة 5 الا تلت العصر", "2026-10-30T16:40:00"),
+            ("الساعة 5 إلا ثلث العصر", "2026-10-30T16:40:00"),
+            ("الساعة 5 ونص وخمسة العصر", "2026-10-30T17:35:00"),
+            ("الساعة 5 ونص و خمسة العصر", "2026-10-30T17:35:00"),
+            ("الساعة 5 الا خمسة العصر", "2026-10-30T16:55:00"),
+            ("الساعة 5 الا خمسة", "2026-10-30T04:55:00"),
+            ("الساعة ٥ ونص العصر", "2026-10-30T17:30:00"),
+            ("ساعة 5 ونص العصر", "2026-10-30T17:30:00"),
+            ("يوم التلات ساعة 5 ونص", "2026-11-03T05:30:00"),
+            ("بكرة الساعة الخامسة ونص", "2026-10-31T05:30:00"),
+            ("بكرة الساعة الثانية عشرة الا ربع ظهرا", "2026-10-31T11:45:00"),
+            ("بكرا الساعة ٧ الا ربع مساء", "2026-10-31T18:45:00"),
+            ("بكرا الساعة ٧ مساء الا ربع", "2026-10-31T18:45:00"),
+        ] {
+            assert_eq!(iso(text), time, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_half_hour_with_no_day_part_is_as_unclear_as_the_hour() {
+        let r = resolve("الساعة 5 ونص", TODAY).unwrap();
+        assert_eq!((r.time, r.ambiguous), (Some((5, 30)), true));
+        let r = resolve("الساعة 5 الا ربع", TODAY).unwrap();
+        assert_eq!((r.time, r.ambiguous), (Some((4, 45)), true));
+        assert!(!resolve("الساعة 5 ونص العصر", TODAY).unwrap().ambiguous);
+        assert!(!resolve("الساعة 5 العصر ونص", TODAY).unwrap().ambiguous);
+        assert!(!resolve("الساعة 17 ونص", TODAY).unwrap().ambiguous);
+    }
+
+    #[test]
+    fn minutes_before_the_hour_cross_midnight() {
+        // The confirmed rule stays: 12 بالليل is 00:00 of the day named.
+        assert_eq!(iso("بكرة الساعة 12 بالليل"), "2026-10-31T00:00:00");
+        // Fifteen minutes before that midnight is the evening before it.
+        assert_eq!(iso("الساعة 12 الا ربع بالليل"), "2026-10-30T23:45:00");
+        assert_eq!(iso("بكرة الساعة 12 الا ربع بالليل"), "2026-10-30T23:45:00");
+        assert_eq!(iso("يوم الأحد الساعة 12 الا ربع بالليل"), "2026-10-31T23:45:00");
+        assert_eq!(iso("الساعة 12 ونص بالليل"), "2026-10-31T00:30:00");
+        assert_eq!(iso("بكرة الساعة 12 ونص بالليل"), "2026-10-31T00:30:00");
+        assert_eq!(iso("بكرة الساعة 1 الا ربع بالليل"), "2026-10-31T00:45:00");
+        assert_eq!(iso("بكرة الساعة 11 ونص بالليل"), "2026-10-31T23:30:00");
+        assert_eq!(iso("بكرة الساعة 11 ونص وخمسة بالليل"), "2026-10-31T23:35:00");
+    }
+
+    #[test]
+    fn words_that_only_look_like_minutes_change_nothing() {
+        // Durations stay durations.
+        for text in ["بعد نص ساعة", "بعد ربع ساعة", "بعد تلت ساعة", "نص ساعة", "ربع ساعة"] {
+            assert_eq!(resolve(text, TODAY), None, "{text}");
+        }
+        assert_eq!(iso("بكرة بعد نص ساعة"), "2026-10-31");
+        // نص without و, or not right after the hour, is not a half hour.
+        assert_eq!(iso("ذكرني الساعة 5 اقرا نص الكتاب"), "2026-10-30T05:00:00");
+        assert_eq!(iso("الساعة 5 العصر نص الكتاب"), "2026-10-30T17:00:00");
+        assert_eq!(iso("الساعة 5 اقرا ونص الكتاب"), "2026-10-30T05:00:00");
+        assert_eq!(iso("الساعة 5 الا الكتاب"), "2026-10-30T05:00:00");
+        assert_eq!(iso("الساعة 5 الا ربعه"), "2026-10-30T05:00:00");
+        // A unit after them makes them a duration, and a clock time has no hour to move.
+        assert_eq!(iso("الساعة 5 ونص ساعة"), "2026-10-30T05:00:00");
+        assert_eq!(iso("الساعة 5 وربع ساعة"), "2026-10-30T05:00:00");
+        assert_eq!(iso("الساعة 5:30 ونص"), "2026-10-30T05:30:00");
+        // They only follow the word for hour.
+        assert_eq!(iso("غدا at 5 ونص"), "2026-10-31T05:00:00");
+        assert_eq!(resolve("ونص", TODAY), None);
+        assert_eq!(resolve("الا ربع", TODAY), None);
     }
 
     #[test]
