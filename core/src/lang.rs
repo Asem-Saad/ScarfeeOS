@@ -1,3 +1,5 @@
+use crate::datetime::{names_prayer, weekday_at};
+
 /// Languages ScarfeeOS supports as main languages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
@@ -240,14 +242,9 @@ pub fn without_command_words(text: &str) -> String {
 
 const DAY_WORDS: &[&str] = &[
     "today", "tomorrow", "tonight", "اليوم", "النهارده", "انهارده", "الليله", "غدا", "غد", "بكره", "بكرا", "باكر", "باجر",
-    "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "الاحد", "الاثنين", "الثلاثاء",
-    "الاربعاء", "الخميس", "الجمعه", "السبت",
-    // Egyptian weekdays, and "the day after tomorrow" in Modern Standard
-    "التنين", "التلات", "الاربع", "الغد",
+    // "The day after tomorrow" in Modern Standard
+    "الغد",
 ];
-
-/// Weekdays without ال, which only count after يوم or كل.
-const BARE_WEEKDAYS: &[&str] = &["احد", "اثنين", "ثلاثاء", "اربعاء", "خميس", "جمعه", "سبت", "الحد", "تنين", "تلات", "اربع"];
 
 const PART_WORDS: &[&str] = &[
     "morning", "am", "noon", "afternoon", "pm", "evening", "night", "صباحا", "صباح", "الصباح", "الصبح", "الصبحيه", "ظهرا",
@@ -279,8 +276,8 @@ fn is_time_word(words: &[String], i: usize) -> bool {
     let before_part = next.is_some_and(|n| PART_WORDS.contains(&n));
     let after_marker = matches!(prev, Some("at") | Some("الساعه"));
     DAY_WORDS.contains(&word)
-        || PART_WORDS.contains(&word)
-        || (BARE_WEEKDAYS.contains(&word) && matches!(prev, Some("يوم") | Some("كل")))
+        || weekday_at(words, i).is_some()
+        || (PART_WORDS.contains(&word) && !names_prayer(prev))
         || is_clock(word)
         || (!word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()) && (after_marker || before_part))
         || (HOUR_WORDS.contains(&word) && (prev == Some("الساعه") || before_part))
@@ -320,6 +317,16 @@ pub fn without_time_words(text: &str, trailing_only: bool) -> String {
 /// taken out, exactly as they were written. Empty when nothing is left.
 pub fn without_command_and_time(text: &str) -> String {
     without_command_words(&without_time_words(text, false))
+}
+
+/// The title of a reminder with no task words, in the language the user wrote
+/// in. Fixed and neutral, so a reminder never holds a word the user did not say.
+pub fn default_reminder_title(text: &str) -> &'static str {
+    if has_letters(text, Language::Arabic) {
+        "تذكير"
+    } else {
+        "Reminder"
+    }
 }
 
 /// Words that say a title follows. A title the user names ends at the time or
@@ -554,5 +561,34 @@ mod tests {
         ] {
             assert_eq!(without_time_words(text, false), expected, "{text}");
         }
+    }
+
+    #[test]
+    fn egyptian_weekdays_are_removed_like_the_dates_that_read_them() {
+        for (text, expected) in [
+            ("اتصل بالبنك يوم التلات", "اتصل بالبنك"),
+            ("اتصل بالبنك التلات الساعة 4", "اتصل بالبنك"),
+            ("اتصل بالبنك الاربعا العصر", "اتصل بالبنك"),
+            ("اتصل بالبنك كل تنين", "اتصل بالبنك"),
+            ("اتصل بالبنك يوم حد", "اتصل بالبنك"),
+            ("اتصل بالبنك الثلاثا", "اتصل بالبنك"),
+            ("اكل كل اربع ساعات", "اكل كل اربع ساعات"),
+            ("كل حد عارف", "كل حد عارف"),
+        ] {
+            assert_eq!(without_time_words(text, false), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn prayer_names_stay_in_the_text() {
+        assert_eq!(without_time_words("اتصل بالبنك بعد صلاة العصر", false), "اتصل بالبنك بعد صلاة العصر");
+        assert_eq!(without_time_words("اتصل بالبنك بعد صلاة المغرب", false), "اتصل بالبنك بعد صلاة المغرب");
+        assert_eq!(without_time_words("اتصل بالبنك بكرة بعد صلاة الظهر", false), "اتصل بالبنك بعد صلاة الظهر");
+    }
+
+    #[test]
+    fn the_default_reminder_title_follows_the_users_language() {
+        assert_eq!(default_reminder_title("ذكرني بكرة الساعة 5"), "تذكير");
+        assert_eq!(default_reminder_title("remind me tomorrow at 5"), "Reminder");
     }
 }

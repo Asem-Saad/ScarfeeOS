@@ -199,8 +199,8 @@ impl<'a> Assistant<'a> {
             Err(e) => return Outcome::Error(e),
         };
         let call = match call {
-            ToolCall::CreateReminder { text, time, repeat } => {
-                ToolCall::CreateReminder { text: reminder_text(text, user_text), time, repeat }
+            ToolCall::CreateReminder { time, repeat, .. } => {
+                ToolCall::CreateReminder { text: reminder_text(user_text), time, repeat }
             }
             ToolCall::ScheduleMeeting { time, attendees, repeat, .. } => {
                 let (title, attendees) = lang::meeting_from_user_text(user_text, &attendees);
@@ -222,18 +222,14 @@ impl<'a> Assistant<'a> {
 
 /// The reminder text: the user's own words without the command and the time,
 /// so the model's wording, which can change the meaning, never reaches the
-/// reminder. Only when nothing is left is the model's text used, without a
-/// time it copied at the end.
-fn reminder_text(model_text: String, user_text: &str) -> String {
+/// reminder. When no task words are left, a fixed neutral title in the user's
+/// language, never the model's text.
+fn reminder_text(user_text: &str) -> String {
     let own = lang::without_command_and_time(user_text);
-    if !own.is_empty() {
-        return own;
-    }
-    let stripped = lang::without_time_words(&model_text, true);
-    if stripped.is_empty() {
-        model_text
+    if own.is_empty() {
+        lang::default_reminder_title(user_text).to_string()
     } else {
-        stripped
+        own
     }
 }
 
@@ -847,10 +843,28 @@ mod tests {
     }
 
     #[test]
-    fn the_model_text_is_used_only_when_nothing_of_the_users_remains() {
-        let (text, time) = reminder_for("ذكرني بكرة الساعة 5 العصر", "اتصل بالبنك بكرة", Language::Arabic);
+    fn a_reminder_with_no_task_words_gets_a_neutral_title_not_the_models_text() {
+        for model_text in ["اتصل بالبنك بكرة", "buy milk", ""] {
+            let (text, time) = reminder_for("ذكرني بكرة الساعة 5 العصر", model_text, Language::Arabic);
+            assert_eq!(text, "تذكير", "{model_text:?}");
+            assert_eq!(time, "2026-10-31T17:00:00", "{model_text:?}");
+            // No part of the day: the hour is unclear, so the user is asked, with the same title.
+            let args = json!({"text": model_text, "time": "2020-01-01T00:00:00"}).to_string();
+            let outcome = turn(&model(call("create_reminder", &args)), "ذكرني بكرة الساعة 5", Language::Arabic).0;
+            let Outcome::NeedsClarification(ToolCall::CreateReminder { text, .. }) = outcome else {
+                panic!("expected a question, got {outcome:?}");
+            };
+            assert_eq!(text, "تذكير", "{model_text:?}");
+        }
+        let (text, _) = reminder_for("Remind me tomorrow at 5 pm", "call the bank", Language::English);
+        assert_eq!(text, "Reminder");
+    }
+
+    #[test]
+    fn a_reminder_on_an_egyptian_weekday_keeps_its_date_and_task() {
+        let (text, time) = reminder_for("ذكرني اتصل بالبنك يوم التلات الساعة 4 العصر", "x", Language::Arabic);
         assert_eq!(text, "اتصل بالبنك");
-        assert_eq!(time, "2026-10-31T17:00:00");
+        assert_eq!(time, "2026-11-03T16:00:00");
     }
 
     #[test]

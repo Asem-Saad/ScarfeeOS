@@ -143,22 +143,25 @@ fn tokens(text: &str) -> Vec<String> {
     out
 }
 
-/// Forms without ال only count after يوم or كل: alone, احد means "someone"
-/// and سبت means "basket".
-fn weekday_of(word: &str, prev: Option<&str>) -> Option<u32> {
+/// The weekday a word names, from MSA, Egyptian and Gulf spellings, with and
+/// without ال. Forms without ال only count after يوم or كل: alone, احد means
+/// "someone" and سبت means "basket". الحد (the limit) needs it too, and حد
+/// (someone) needs يوم, because كل حد is "everyone".
+fn weekday_form(word: &str, prev: Option<&str>) -> Option<u32> {
     let named = matches!(prev, Some("يوم") | Some("كل"));
     match word {
         "sunday" | "الاحد" => Some(0),
-        "monday" | "الاثنين" => Some(1),
-        "tuesday" | "الثلاثاء" => Some(2),
-        "wednesday" | "الاربعاء" => Some(3),
+        "monday" | "الاثنين" | "الاتنين" | "التنين" | "الثنين" => Some(1),
+        "tuesday" | "الثلاثاء" | "الثلاثا" | "التلات" | "التلاتا" => Some(2),
+        "wednesday" | "الاربعاء" | "الاربعا" | "الاربع" => Some(3),
         "thursday" | "الخميس" => Some(4),
         "friday" | "الجمعه" => Some(5),
         "saturday" | "السبت" => Some(6),
-        "احد" if named => Some(0),
-        "اثنين" if named => Some(1),
-        "ثلاثاء" if named => Some(2),
-        "اربعاء" if named => Some(3),
+        "احد" | "الحد" if named => Some(0),
+        "حد" if prev == Some("يوم") => Some(0),
+        "اثنين" | "اتنين" | "تنين" | "ثنين" if named => Some(1),
+        "ثلاثاء" | "ثلاثا" | "تلات" | "تلاتا" if named => Some(2),
+        "اربعاء" | "اربعا" | "اربع" if named => Some(3),
         "خميس" if named => Some(4),
         "جمعه" if named => Some(5),
         "سبت" if named => Some(6),
@@ -166,14 +169,34 @@ fn weekday_of(word: &str, prev: Option<&str>) -> Option<u32> {
     }
 }
 
+/// Units that follow a number, which make تلات and اربع a count ("كل اربع
+/// ساعات" is every four hours, not every Wednesday).
+const COUNTED: &[&str] = &[
+    "ساعه", "ساعات", "ساعتين", "دقيقه", "دقايق", "دقائق", "دقيقتين", "ايام", "يومين", "اسبوع", "اسابيع", "شهر",
+    "شهور", "اشهر", "سنه", "سنين", "سنوات", "مره", "مرات",
+];
+
+/// The weekday named by `words[i]`, as 0 for Sunday to 6 for Saturday.
+pub(crate) fn weekday_at(words: &[String], i: usize) -> Option<u32> {
+    let word = words.get(i)?.as_str();
+    let prev = i.checked_sub(1).map(|p| words[p].as_str());
+    let counted = words.get(i + 1).is_some_and(|n| COUNTED.contains(&n.as_str()));
+    weekday_form(word, prev).filter(|_| !counted)
+}
+
+/// True after the word for a prayer or its call. The names that follow share
+/// words with times of day, but they are not times.
+pub(crate) fn names_prayer(prev: Option<&str>) -> bool {
+    matches!(prev, Some("صلاه") | Some("اذان"))
+}
+
 /// Reads what follows "every" or "كل". "كل شيء" (everything) is not a repeat.
 fn repeat_after(words: &[String], i: usize) -> Option<Repeat> {
     let next = words.get(i + 1).map(String::as_str)?;
     if next == "day" || next == "يوم" {
-        let is_weekday = words.get(i + 2).is_some_and(|w| weekday_of(w, Some(next)).is_some());
-        return Some(if is_weekday { Repeat::Weekly } else { Repeat::Daily });
+        return Some(if weekday_at(words, i + 2).is_some() { Repeat::Weekly } else { Repeat::Daily });
     }
-    weekday_of(next, Some("كل")).map(|_| Repeat::Weekly)
+    weekday_at(words, i + 1).map(|_| Repeat::Weekly)
 }
 
 fn day_part_of(word: &str) -> Option<DayPart> {
@@ -237,11 +260,11 @@ pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
             }
             _ => {}
         }
-        if let (None, Some(day)) = (offset, weekday_of(word, prev)) {
+        if let (None, Some(day)) = (offset, weekday_at(&words, i)) {
             let ahead = (i64::from(day) - i64::from(today.weekday())).rem_euclid(7);
             offset = Some(if ahead == 0 { 7 } else { ahead });
         }
-        if part.is_none() && next != Some("الخير") {
+        if part.is_none() && next != Some("الخير") && !names_prayer(prev) {
             part = day_part_of(word);
         }
         if time.is_some() {
@@ -447,5 +470,86 @@ mod tests {
     fn plain_numbers_are_not_times() {
         assert_eq!(resolve("Find the file called budget 2026.", TODAY), None);
         assert_eq!(resolve("ابحث عن الملف الذي اسمه ميزانية 2026.", TODAY), None);
+    }
+
+    #[test]
+    fn egyptian_and_gulf_weekdays_with_al() {
+        // TODAY is Friday 2026-10-30.
+        for (text, date) in [
+            ("يوم الحد", "2026-11-01"),
+            ("الاحد", "2026-11-01"),
+            ("التنين الساعة 3 العصر", "2026-11-02T15:00:00"),
+            ("الاتنين", "2026-11-02"),
+            ("الثنين", "2026-11-02"),
+            ("الاثنين", "2026-11-02"),
+            ("التلات", "2026-11-03"),
+            ("التلات الساعة 10 الصبح", "2026-11-03T10:00:00"),
+            ("الثلاثا", "2026-11-03"),
+            ("الثلاثاء", "2026-11-03"),
+            ("الأربع", "2026-11-04"),
+            ("الاربعا", "2026-11-04"),
+            ("الخميس", "2026-11-05"),
+            ("السبت", "2026-10-31"),
+        ] {
+            assert_eq!(iso(text), date, "{text}");
+        }
+    }
+
+    #[test]
+    fn egyptian_and_gulf_weekdays_without_al_need_a_day_word() {
+        for (text, date) in [
+            ("يوم حد", "2026-11-01"),
+            ("يوم تنين", "2026-11-02"),
+            ("يوم اتنين", "2026-11-02"),
+            ("يوم تلات", "2026-11-03"),
+            ("يوم تلات الساعة 4 العصر", "2026-11-03T16:00:00"),
+            ("يوم ثلاثا", "2026-11-03"),
+            ("يوم اربع", "2026-11-04"),
+            ("يوم اربعا", "2026-11-04"),
+            ("يوم خميس", "2026-11-05"),
+            ("يوم جمعة", "2026-11-06"),
+            ("يوم سبت", "2026-10-31"),
+        ] {
+            assert_eq!(iso(text), date, "{text}");
+        }
+        for text in ["تلات", "اربع", "تنين", "حد", "الحد الاقصى", "كل حد عارف", "اربع حاجات"] {
+            assert_eq!(resolve(text, TODAY), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn egyptian_weekdays_repeat_and_counts_do_not() {
+        let r = resolve("كل تلات الساعة 9 الصبح", TODAY).unwrap();
+        assert_eq!((r.repeat, r.date), (Some(Repeat::Weekly), Date::new(2026, 11, 3)));
+        assert_eq!(resolve("كل يوم تنين", TODAY).unwrap().repeat, Some(Repeat::Weekly));
+        assert_eq!(resolve("كل اربع ساعات", TODAY), None);
+        assert_eq!(resolve("كل تلات ايام", TODAY), None);
+        assert_eq!(resolve("التلات ساعات", TODAY), None);
+    }
+
+    #[test]
+    fn midnight_is_pinned() {
+        assert_eq!(iso("بكرة الساعة 12 بالليل"), "2026-10-31T00:00:00");
+        assert_eq!(iso("الساعة 12 مساء"), "2026-10-31T00:00:00");
+        assert_eq!(iso("بكرة الساعة 12 مساء"), "2026-10-31T00:00:00");
+    }
+
+    #[test]
+    fn prayer_names_are_not_times_of_day() {
+        // A prayer name must not give a time: الساعة 2 stays unclear, and
+        // بعد صلاة العصر alone has no hour.
+        assert!(resolve("بكرة بعد صلاة العصر", TODAY).unwrap().time.is_none());
+        assert!(resolve("بكرة بعد صلاة الظهر", TODAY).unwrap().time.is_none());
+        assert!(resolve("بكرة بعد اذان الضهر", TODAY).unwrap().time.is_none());
+        assert_eq!(resolve("بعد صلاة العصر", TODAY), None);
+        let r = resolve("بكرة الساعة 2 بعد صلاة الظهر", TODAY).unwrap();
+        assert_eq!(r.time, Some((2, 0)));
+        assert!(r.ambiguous);
+        // Prayer names that were never time words stay that way.
+        for text in ["بعد صلاة المغرب", "قبل صلاة الفجر", "بعد صلاة العشاء", "after the Maghrib prayer", "before Fajr"] {
+            assert_eq!(resolve(text, TODAY), None, "{text}");
+        }
+        // The same words still count as times of day on their own.
+        assert_eq!(iso("بكرة الساعة 2 الضهر"), "2026-10-31T14:00:00");
     }
 }
