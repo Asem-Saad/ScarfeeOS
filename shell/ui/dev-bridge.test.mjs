@@ -37,10 +37,15 @@ const fakeCore = path.join(tmp, 'fake-core.js');
 fs.writeFileSync(fakeCore, FAKE_CORE, { mode: 0o755 });
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
+// The cookie a page load hands out; withBridge sets it for the bridge it starts.
+let cookie = '';
+const cookieOf = (res) => /^scarfeeos_dev_token=[0-9a-f]+/.exec(res.headers.get('set-cookie') || '')?.[0];
+
 async function withBridge(options, body) {
   const bridge = createBridge({ corePath: fakeCore, port: 0, ...options });
   const port = await bridge.start();
   try {
+    cookie = cookieOf(await fetch(`http://127.0.0.1:${port}/`));
     await body(`http://127.0.0.1:${port}`, port);
   } finally {
     await bridge.stop();
@@ -50,7 +55,7 @@ async function withBridge(options, body) {
 const chat = (base, text, language = 'en') =>
   fetch(`${base}/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
     body: JSON.stringify({ text, language }),
   }).then(async (res) => ({ status: res.status, body: await res.json() }));
 
@@ -81,7 +86,7 @@ test('a request gets the matching response, and Arabic survives the round trip',
 test('confirm, confirm with a time, and cancel reach the core with only their own fields', async () => {
   await withBridge({}, async (base) => {
     const post = (body) =>
-      fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(body) })
         .then(async (res) => ({ status: res.status, body: await res.json() }));
     const sent = async (body) => {
       const { status, body: answer } = await post(body);
@@ -105,7 +110,7 @@ test('confirm, confirm with a time, and cancel reach the core with only their ow
 test('upcoming, delete_event and hardware reach the core with only their own fields', async () => {
   await withBridge({}, async (base) => {
     const sent = async (body) => {
-      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(body) });
       assert.strictEqual(res.status, 200, JSON.stringify(body));
       const { id, ...fields } = (await res.json()).request;
       assert.strictEqual(typeof id, 'number');
@@ -122,7 +127,7 @@ test('upcoming, delete_event and hardware reach the core with only their own fie
       { upcoming: true, hardware: true }, { upcoming: true, cancel: 'a' }, { delete_event: 'u', confirm: 'a' }, { hardware: true, text: 'hi', language: 'en' },
       { upcoming: true, language: 'en' }, { hardware: true, time: '10:00' },
     ]) {
-      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(body) });
       assert.strictEqual(res.status, 400, JSON.stringify(body));
     }
   });
@@ -135,7 +140,7 @@ test('confirm and cancel requests that are not well formed are refused before th
       { confirm: 'a', cancel: 'a' }, { confirm: 'a', text: 'hi', language: 'en' }, { confirm: 'a', language: 'en' }, { text: 'hi', language: 'en', time: '10:00' },
       { time: '2026-10-30T15:30' }, {},
     ]) {
-      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(body) });
       assert.strictEqual(res.status, 400, JSON.stringify(body));
     }
   });
@@ -213,7 +218,7 @@ test('a core that cannot be started is an error for the request, not a crash', a
 test('bad chat requests are refused before they reach the core', async () => {
   await withBridge({}, async (base, port) => {
     const post = (body, type = 'application/json') =>
-      fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': type }, body }).then((r) => r.status);
+      fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': type, Cookie: cookie }, body }).then((r) => r.status);
     assert.strictEqual(await post('{nope'), 400);
     assert.strictEqual(await post('null'), 400);
     assert.strictEqual(await post(JSON.stringify({ text: 5, language: 'en' })), 400);
@@ -221,8 +226,8 @@ test('bad chat requests are refused before they reach the core', async () => {
     assert.strictEqual(await post(JSON.stringify({ text: 'hi' })), 400);
     assert.strictEqual(await post(JSON.stringify({ text: 'hi', language: 'en' }), 'text/plain'), 415);
     assert.strictEqual(await post(JSON.stringify({ text: 'x'.repeat(70 * 1024), language: 'en' })), 413);
-    assert.strictEqual((await fetch(`${base}/chat`)).status, 405);
-    assert.strictEqual((await raw(port, 'OPTIONS /chat HTTP/1.1')).status, 405);
+    assert.strictEqual((await fetch(`${base}/chat`, { headers: { Cookie: cookie } })).status, 405);
+    assert.strictEqual((await raw(port, 'OPTIONS /chat HTTP/1.1', { Cookie: cookie })).status, 405);
     assert.strictEqual((await chat(base, 'still fine')).status, 200);
   });
 });
@@ -237,10 +242,86 @@ test('listens on loopback only, and refuses other Host and Origin headers', asyn
     assert.strictEqual((await raw(port, 'GET / HTTP/1.1', { Host: `evil.example:${port}` })).status, 403);
     assert.strictEqual((await raw(port, 'GET / HTTP/1.1', { Origin: 'http://evil.example' })).status, 403);
     assert.strictEqual((await raw(port, 'GET / HTTP/1.1', { Origin: 'null' })).status, 403);
-    assert.strictEqual((await raw(port, 'GET / HTTP/1.1', { Origin: `http://localhost:${port}` })).status, 200);
+    assert.strictEqual((await raw(port, 'GET / HTTP/1.1', { Origin: `http://localhost:${port}` })).status, 403);
+    assert.strictEqual((await raw(port, 'GET / HTTP/1.1', { Host: `localhost:${port}` })).status, 403);
+    assert.strictEqual((await raw(port, 'GET / HTTP/1.1', { Origin: `http://127.0.0.1:${port}` })).status, 200);
   } finally {
     await bridge.stop();
   }
+});
+
+test('/chat needs the cookie from a page load, the right Host, and a matching Origin if there is one', async () => {
+  await withBridge({}, async (base, port) => {
+    const body = JSON.stringify({ text: 'hello', language: 'en' });
+    const post = (headers) =>
+      fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body }).then(async (res) => ({ status: res.status, text: await res.text() }));
+    const rawWithBody = (headers) => {
+      const request = net.connect(port, '127.0.0.1');
+      const lines = { Host: `127.0.0.1:${port}`, Connection: 'close', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers };
+      request.write(`POST /chat HTTP/1.1\r\n${Object.entries(lines).map(([k, v]) => `${k}: ${v}`).join('\r\n')}\r\n\r\n${body}`);
+      return new Promise((resolve) => {
+        let data = '';
+        request.on('data', (chunk) => { data += chunk; });
+        request.on('end', () => resolve(Number(/^HTTP\/1\.1 (\d+)/.exec(data)[1])));
+      });
+    };
+
+    // The normal flow: load the page, take its cookie, post with it (and with the page's own Origin).
+    const page = await fetch(`${base}/`);
+    const set = page.headers.get('set-cookie');
+    assert.match(set, /^scarfeeos_dev_token=[0-9a-f]{64}; HttpOnly; SameSite=Strict; Path=\//);
+    const good = cookieOf(page);
+    assert.strictEqual((await post({ Cookie: good })).status, 200);
+    assert.strictEqual((await post({ Cookie: good, Origin: `http://127.0.0.1:${port}` })).status, 200);
+    assert.strictEqual((await post({ Cookie: `other=1; ${good}; more=2` })).status, 200);
+
+    // No cookie, a wrong cookie, a cookie that is only a prefix or an extension of the right one: refused.
+    const refused = [{}, { Cookie: '' }, { Cookie: 'scarfeeos_dev_token=' }, { Cookie: 'scarfeeos_dev_token=wrong' },
+      { Cookie: good.slice(0, -1) }, { Cookie: `${good}0` }, { Cookie: good.replace('scarfeeos_dev_token', 'other') }];
+    for (const headers of refused) {
+      const result = await post(headers);
+      assert.strictEqual(result.status, 403, JSON.stringify(headers));
+      assert.strictEqual(JSON.parse(result.text).kind, 'error');
+    }
+    assert.strictEqual((await post({ Cookie: good, Origin: 'http://evil.example' })).status, 403);
+    assert.strictEqual((await post({ Cookie: good, Origin: 'null' })).status, 403);
+    assert.strictEqual((await post({ Cookie: good, Origin: `http://127.0.0.1:${port + 1}` })).status, 403);
+    assert.strictEqual((await post({ Cookie: good, Origin: `https://127.0.0.1:${port}` })).status, 403);
+    assert.strictEqual(await rawWithBody({ Cookie: good, Host: 'evil.example' }), 403);
+    assert.strictEqual(await rawWithBody({ Cookie: good, Host: `evil.example:${port}` }), 403);
+    assert.strictEqual(await rawWithBody({ Cookie: good, Host: '127.0.0.1' }), 403);
+    assert.strictEqual(await rawWithBody({ Cookie: good }), 200);
+    // Refusing comes before the method check, so an unauthenticated caller learns nothing about the route.
+    assert.strictEqual((await fetch(`${base}/chat`)).status, 403);
+    assert.strictEqual((await raw(port, 'OPTIONS /chat HTTP/1.1')).status, 403);
+    assert.strictEqual((await post({ Cookie: good })).status, 200);
+  });
+});
+
+test('the token is new on every start and is not the same across bridges', async () => {
+  const tokens = [];
+  for (let i = 0; i < 2; i += 1) {
+    await withBridge({}, async () => { tokens.push(cookie); });
+  }
+  assert.match(tokens[0], /^scarfeeos_dev_token=[0-9a-f]{64}$/);
+  assert.notStrictEqual(tokens[0], tokens[1]);
+  // The first bridge's cookie means nothing to the second.
+  await withBridge({}, async (base) => {
+    const res = await fetch(`${base}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: tokens[0] }, body: JSON.stringify({ hardware: true }) });
+    assert.strictEqual(res.status, 403);
+  });
+});
+
+test('static files need no cookie, and only HTML files hand one out', async () => {
+  await withBridge({}, async (base, port) => {
+    for (const p of ['/', '/panel.js', '/panel.css', '/ui/i18n.js', '/locales/ar/scarfeeos.ftl', '/installer/']) {
+      const res = await fetch(`${base}${p}`);
+      assert.strictEqual(res.status, 200, p);
+      assert.strictEqual(Boolean(res.headers.get('set-cookie')), p === '/' || p === '/installer/', p);
+    }
+    assert.match((await fetch(`${base}/calendar.html`)).headers.get('set-cookie'), /HttpOnly; SameSite=Strict/);
+    assert.strictEqual((await raw(port, 'GET /panel.js HTTP/1.1', { Cookie: 'scarfeeos_dev_token=wrong' })).status, 200);
+  });
 });
 
 test('static files: the panel and the locale files are served', async () => {

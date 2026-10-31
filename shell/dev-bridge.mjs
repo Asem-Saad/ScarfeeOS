@@ -6,7 +6,16 @@
 // Then open http://127.0.0.1:8770/ (the panel), /calendar.html or /installer/ (shell/installer/, which loads
 // ../ui/i18n.js, so shell/ui/ is also served at /ui/). The bridge forwards text, confirm, cancel, upcoming,
 // delete_event and hardware requests to the core. Standard library only. Not for production use.
+//
+// Access control. Every start makes a new random token. Page loads (HTML files) get it as an HttpOnly,
+// SameSite=Strict cookie, and /chat refuses any request that does not carry it. Every request must also name
+// 127.0.0.1:<port> as its Host, and an Origin header, when there is one, must be http://127.0.0.1:<port>. Together
+// these keep web pages (cross-site requests, DNS rebinding) and local processes that never loaded a page out.
+// This does NOT stop a process running as the same user: it can fetch the page too, read the cookie from the
+// response and use it. That limit is accepted because the bridge is for development only and is not in the
+// shipped product.
 
+import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
@@ -20,6 +29,7 @@ const DEFAULT_PORT = 8770;
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_BODY_BYTES = 64 * 1024;
 const LANGUAGES = new Set(['en', 'ar']);
+const TOKEN_COOKIE = 'scarfeeos_dev_token';
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -227,6 +237,20 @@ function chatFields(body) {
   return { confirm: body.confirm, time: body.time };
 }
 
+// Compares digests, so the time taken does not depend on how much of the guess is right or on its length.
+function sameToken(given, expected) {
+  const digest = (value) => crypto.createHash('sha256').update(value).digest();
+  return crypto.timingSafeEqual(digest(given), digest(expected));
+}
+
+function cookieValues(header, name) {
+  return (header || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith(`${name}=`))
+    .map((part) => part.slice(name.length + 1));
+}
+
 function send(res, status, headers, body) {
   res.writeHead(status, { 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...headers });
   res.end(body);
@@ -271,7 +295,9 @@ export function createBridge({
   installerDir = path.join(shellDir, 'installer'),
 }) {
   const core = createCore({ corePath, timeoutMs });
-  let allowedHosts = new Set();
+  let allowedHost = null;
+  let allowedOrigin = null;
+  let token = null;
 
   async function chat(req, res) {
     if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '')) {
@@ -302,12 +328,16 @@ export function createBridge({
     if (!file) {
       throw new BridgeError('not found', 404);
     }
-    res.writeHead(200, {
+    const headers = {
       'Content-Type': CONTENT_TYPES[path.extname(file)] || 'application/octet-stream',
       'Content-Length': (await fs.stat(file)).size,
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
-    });
+    };
+    if (path.extname(file) === '.html') {
+      headers['Set-Cookie'] = `${TOKEN_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/`;
+    }
+    res.writeHead(200, headers);
     if (req.method === 'HEAD') {
       res.end();
     } else {
@@ -318,7 +348,7 @@ export function createBridge({
   async function handle(req, res) {
     // Refuses requests that reached loopback by way of another site (DNS rebinding, cross-site forms).
     const origin = req.headers.origin;
-    if (!allowedHosts.has(req.headers.host) || (origin !== undefined && !allowedHosts.has(origin.replace(/^http:\/\//, '')))) {
+    if (req.headers.host !== allowedHost || (origin !== undefined && origin !== allowedOrigin)) {
       throw new BridgeError('forbidden', 403);
     }
     let pathname;
@@ -331,6 +361,9 @@ export function createBridge({
       throw new BridgeError('bad request path', 400);
     }
     if (pathname === '/chat') {
+      if (!cookieValues(req.headers.cookie, TOKEN_COOKIE).some((value) => sameToken(value, token))) {
+        throw new BridgeError('forbidden', 403);
+      }
       if (req.method !== 'POST') {
         throw new BridgeError('use POST', 405);
       }
@@ -363,7 +396,9 @@ export function createBridge({
         server.listen(port, HOST, () => {
           server.off('error', reject);
           const actual = server.address().port;
-          allowedHosts = new Set([`${HOST}:${actual}`, `localhost:${actual}`]);
+          allowedHost = `${HOST}:${actual}`;
+          allowedOrigin = `http://${allowedHost}`;
+          token = crypto.randomBytes(32).toString('hex');
           resolve(actual);
         });
       });
