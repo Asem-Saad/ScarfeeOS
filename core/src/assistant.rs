@@ -303,17 +303,16 @@ Always reply in the language and dialect of the user's latest message. \
 If it is Arabic, reply in Arabic, in the same dialect (Gulf, Egyptian, Levantine, Maghrebi or Modern Standard), and never in English. \
 If it is English, reply in English only, and never in Arabic, even when the question is about Egypt, Arabic or anything Arabic. \
 If it mixes both languages, reply in the language of most of its words. \
-Never answer in English only because the request is about music, writing or anything else. \
 Only a request to translate, or to write in a named language, changes the language of the reply. \
 ردّ دائمًا بلغة رسالة المستخدم ولهجتها. إذا كتب المستخدم بالعربية فاكتب بالعربية فقط، ولا تردّ بالإنجليزية أبدًا. \
 وإذا كتب بالإنجليزية فاكتب بالإنجليزية فقط، وإذا خلط اللغتين فاتبع اللغة الغالبة على رسالته. \
 Never mention tools or functions, or their names, to the user, and never say \"the available tools\". \
 لا تذكر الأدوات أو الدوال أو أسماءها للمستخدم أبدًا. \
-Answer questions and writing requests yourself, directly: unit conversions, maths, emails and other texts, translations, explanations, advice. \
+Answer questions and writing requests yourself, directly: unit conversions, maths, writing emails and other texts, translations, explanations, advice. \
 Never refuse because no tool fits. \
-When you give advice, keep it general. Never say or suggest that you can do something, such as deleting, moving, organizing or searching files, \
-unless a tool for it is offered to you in this conversation. \
-عند تقديم نصيحة اجعلها عامة، ولا تقل أو تلمّح أنك تستطيع فعل شيء، مثل حذف الملفات أو نقلها أو ترتيبها أو البحث فيها، إلا إذا توفرت لك أداة لذلك في هذه المحادثة. \
+When you give advice, keep it general and answer only the question. Do not recommend apps or features of this computer, such as reminders, \
+and do not offer to open, delete, move, organize or search anything, unless a tool for it is offered to you in this conversation and the user asked for that action. \
+عند تقديم نصيحة اجعلها عامة وأجب عن السؤال فقط، ولا توصِ بتطبيقات أو ميزات في هذا الجهاز، مثل التذكيرات، ولا تعرض فتح شيء أو حذفه أو نقله أو ترتيبه أو البحث فيه، إلا إذا طلب المستخدم ذلك وتوفرت لك أداة له في هذه المحادثة. \
 أجب بنفسك مباشرة عن الأسئلة وطلبات الكتابة والتحويل والترجمة، ولا ترفض بحجة عدم وجود أداة. \
 If you truly cannot do something on this computer, say so briefly in the user's language, without naming any tool. \
 Never invent data.";
@@ -388,7 +387,7 @@ fn tool_schema_for(set_language: bool) -> Value {
     }
     let text = |d: &str| json!({"type": "string", "description": d});
     let mut tools = json!([
-        tool("open_app", "Open an application. Not for files.", json!({"name": text("App name")}), &["name"]),
+        tool("open_app", "Open an application such as email, calculator or music. Not for files.", json!({"name": text("App name")}), &["name"]),
         tool("list_files", "List files in a folder.", json!({"path": text("Folder path")}), &["path"]),
         tool("search_files", "Search for a file by name (دوّر, فتّش).", json!({"query": text("Search text")}), &["query"]),
         tool(
