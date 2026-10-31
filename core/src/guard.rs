@@ -96,6 +96,73 @@ pub fn check_reply(reply: &str, language: Language) -> Vec<Issue> {
     issues
 }
 
+/// Scripts the user wrote in or asked for ("translate to Chinese", "بالروسية"),
+/// which may then appear in the reply even though they do not belong in it.
+fn permitted_scripts(user_text: &str) -> Vec<Script> {
+    const ASKED: &[(&str, &[Script])] = &[
+        ("chinese", &[Script::Cjk]), ("mandarin", &[Script::Cjk]), ("cantonese", &[Script::Cjk]),
+        ("japanese", &[Script::Cjk, Script::Hiragana, Script::Katakana]), ("korean", &[Script::Hangul]),
+        ("russian", &[Script::Cyrillic]), ("cyrillic", &[Script::Cyrillic]), ("ukrainian", &[Script::Cyrillic]),
+        ("bulgarian", &[Script::Cyrillic]), ("serbian", &[Script::Cyrillic]),
+        ("صيني", &[Script::Cjk]), ("ياباني", &[Script::Cjk, Script::Hiragana, Script::Katakana]),
+        ("كوري", &[Script::Hangul]), ("روسي", &[Script::Cyrillic]), ("اوكراني", &[Script::Cyrillic]),
+    ];
+    let normalized = normalize(user_text);
+    let mut permitted: Vec<Script> = user_text.chars().filter_map(script_of).collect();
+    for (name, scripts) in ASKED {
+        if normalized.contains(name) {
+            permitted.extend_from_slice(scripts);
+        }
+    }
+    permitted
+}
+
+/// [`check_reply`] without the scripts the user wrote in or asked for.
+pub fn leaked_words(reply: &str, language: Language, user_text: &str) -> Vec<Issue> {
+    let permitted = permitted_scripts(user_text);
+    let mut issues = check_reply(reply, language);
+    issues.retain(|i| !permitted.contains(&i.script));
+    issues
+}
+
+/// `reply` with every run of leaked characters removed, when what is left is
+/// still a reply: at least two words, and at least two words kept for each
+/// removed run. Otherwise `None`, and the reply should not be shown.
+pub fn without_leaked_characters(reply: &str, language: Language, user_text: &str) -> Option<String> {
+    let permitted = permitted_scripts(user_text);
+    let allowed = allowed(language);
+    let mut runs = 0usize;
+    let mut run_has_letters = false;
+    let mut out = String::new();
+    let mut gap = false;
+    for c in reply.chars() {
+        if script_of(c).is_some_and(|s| !allowed.contains(&s) && !permitted.contains(&s)) {
+            gap = true;
+            if c.is_alphanumeric() && !run_has_letters {
+                run_has_letters = true;
+                runs += 1;
+            }
+            continue;
+        }
+        run_has_letters = false;
+        if gap && !c.is_whitespace() && !out.ends_with(char::is_whitespace) && !")]}»”،,.;:!?؟؛".contains(c) {
+            out.push(' ');
+        }
+        gap = false;
+        out.push(c);
+    }
+    for pair in ["()", "[]", "«»", "“”"] {
+        out = out.replace(pair, "");
+    }
+    for p in [',', '.', ';', ':', '!', '?', '،', '؛', '؟'] {
+        out = out.replace(&format!(" {p}"), &p.to_string());
+    }
+    let lines: Vec<String> = out.lines().map(|l| l.split(' ').filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")).collect();
+    let out = lines.join("\n").trim().to_string();
+    let kept = out.split_whitespace().filter(|w| w.chars().any(char::is_alphanumeric)).count();
+    (kept >= 2 && kept >= runs * 2).then_some(out)
+}
+
 /// The assistant's tools and the tools small models make up. The user is never
 /// told about tools, so a reply that contains one of these names is wrong.
 const TOOL_NAMES: &[&str] = &[
@@ -1241,6 +1308,20 @@ mod tests {
         assert!(claim("what should I do?", reply).is_some());
         // A quoted sentence is not the assistant speaking.
         assert_eq!(claim("hi", "A scammer might say \"I can delete your files\" to scare you."), None);
+    }
+
+    #[test]
+    fn leaked_runs_are_removed_only_when_a_reply_is_left() {
+        let ar = |t: &str| without_leaked_characters(t, Language::Arabic, "سؤال");
+        assert_eq!(ar("الواي فاي，هو اتصال 移动 لاسلكي (移动)."), Some("الواي فاي هو اتصال لاسلكي.".into()));
+        assert_eq!(ar("الواي فاي是一种شبكة لاسلكية"), Some("الواي فاي شبكة لاسلكية".into()));
+        assert_eq!(ar("移动"), None);
+        assert_eq!(ar("شبكة 移动网络是一种无线连接"), None);
+        // Scripts the user wrote or asked for are not leaks.
+        let kept = "It says 你好 and means hello.";
+        assert_eq!(without_leaked_characters(kept, Language::English, "say hello in Chinese"), Some(kept.into()));
+        assert!(leaked_words("Привет", Language::Arabic, "ترجم إلى الروسية").is_empty());
+        assert!(!leaked_words("Привет", Language::Arabic, "ترجم إلى الإنجليزية").is_empty());
     }
 
     #[test]

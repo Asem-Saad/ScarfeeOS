@@ -389,8 +389,8 @@ mod tests {
             json!({
                 "id": 8,
                 "kind": "reply",
-                "text": "تم فتح الملف привет بنجاح",
-                "foreign_words": [{"word": "привет", "script": "cyrillic"}],
+                "text": "تم فتح الملف بنجاح",
+                "foreign_words": [],
             })
         );
     }

@@ -127,8 +127,10 @@ impl<'a> Assistant<'a> {
     }
 
     /// Asks `model` once more when the reply has words in a foreign script,
-    /// is in the other language than the request (English for Arabic, Arabic for English), or names an internal tool. Keeps
-    /// whichever reply has fewer of these problems.
+    /// is in the other language than the request (English for Arabic, Arabic for English), names an internal tool, or says it can
+    /// change or search files with no tool for it. Keeps whichever reply has fewer of these problems.
+    /// Leaked characters never reach the user: when the kept reply still has some,
+    /// they are removed if a sensible reply is left, otherwise a fixed apology is returned.
     fn checked_reply(
         &self,
         model: &dyn Model,
@@ -138,13 +140,19 @@ impl<'a> Assistant<'a> {
         tools: &Value,
         text: String,
     ) -> Outcome {
-        let issues = guard::check_reply(&text, language);
-        let wrong_language = guard::replied_in_wrong_language(user_text, &text);
-        let names_tool = guard::names_a_tool(&text);
-        let problems = issues.len() + usize::from(wrong_language) + usize::from(names_tool);
+        let offered: Vec<&str> =
+            tools.as_array().into_iter().flatten().filter_map(|t| t["function"]["name"].as_str()).collect();
+        let count = |reply: &str| {
+            guard::leaked_words(reply, language, user_text).len()
+                + usize::from(guard::replied_in_wrong_language(user_text, reply))
+                + usize::from(guard::names_a_tool(reply))
+                + usize::from(guard::claims_missing_ability(user_text, reply, &offered).is_some())
+        };
+        let mut text = text;
+        let problems = count(&text);
         if problems > 0 {
             let mut retry = system.to_string();
-            if !issues.is_empty() {
+            if !guard::leaked_words(&text, language, user_text).is_empty() {
                 let name = match language {
                     Language::English => "English",
                     Language::Arabic => "Arabic",
@@ -153,29 +161,35 @@ impl<'a> Assistant<'a> {
                     " Your last reply had words in a foreign script. Reply again in {name}, with no words in other scripts."
                 ));
             }
-            if wrong_language {
+            if guard::replied_in_wrong_language(user_text, &text) {
                 retry.push_str(if lang::pure_script(user_text) == Some(Language::English) {
                     " Your last reply was in Arabic, but the user wrote in English. Reply again in English only."
                 } else {
                     " Your last reply was in English, but the user wrote in Arabic. Reply again in Arabic only, in the user's dialect."
                 });
             }
-            if names_tool {
+            if guard::names_a_tool(&text) {
                 retry.push_str(
                     " Your last reply named a tool or function. Reply again in plain words without naming any tool or function.",
                 );
             }
+            if guard::claims_missing_ability(user_text, &text, &offered).is_some() {
+                retry.push_str(
+                    " Your last reply said or offered something you cannot do here. Reply again without saying or offering that you can do it; give general advice only.",
+                );
+            }
             if let Ok(ModelReply::Text(again)) = model.chat(&retry, user_text, tools) {
-                let again_issues = guard::check_reply(&again, language);
-                let again_problems = again_issues.len()
-                    + usize::from(guard::replied_in_wrong_language(user_text, &again))
-                    + usize::from(guard::names_a_tool(&again));
-                if again_problems < problems {
-                    return Outcome::Reply { text: again, issues: again_issues };
+                if count(&again) < problems {
+                    text = again;
                 }
             }
         }
-        Outcome::Reply { text, issues }
+        if guard::leaked_words(&text, language, user_text).is_empty() {
+            return Outcome::Reply { text, issues: Vec::new() };
+        }
+        let text = guard::without_leaked_characters(&text, language, user_text)
+            .unwrap_or_else(|| (if language == Language::Arabic { APOLOGY_AR } else { APOLOGY_EN }).to_string());
+        Outcome::Reply { text, issues: Vec::new() }
     }
 
     fn time_outcome(&self, timezone: Option<&str>) -> Outcome {
@@ -204,6 +218,7 @@ impl<'a> Assistant<'a> {
             }
             ToolCall::ScheduleMeeting { time, attendees, repeat, .. } => {
                 let (title, attendees) = lang::meeting_from_user_text(user_text, &attendees);
+                let title = subject_title(user_text, &title).unwrap_or(title);
                 ToolCall::ScheduleMeeting { title, time, attendees, repeat }
             }
             other => other,
@@ -219,6 +234,53 @@ impl<'a> Assistant<'a> {
         }
     }
 }
+
+/// Words that open a request for a meeting ("ابي اجتماع", "I want a meeting"). They are
+/// the user's command and never a title.
+const WANT_PHRASES: &[&[&str]] = &[
+    &["ابي"], &["ابغي"], &["ابغا"], &["ابيك"], &["ابغاك"], &["بدي"], &["عايز"], &["عاوز"], &["عايزه"], &["عاوزه"],
+    &["محتاج"], &["محتاجه"], &["احتاج"], &["i", "want"], &["i", "need"], &["id", "like"], &["i", "would", "like"],
+    &["we", "want"], &["we", "need"],
+];
+
+/// Words that open the subject of a meeting ("... عن المشروع الجديد").
+const SUBJECT_MARKERS: &[&str] = &["عن", "بخصوص", "حول", "about", "regarding"];
+
+fn core_word(token: &str) -> String {
+    guard::normalize(token.trim_matches(|c: char| !c.is_alphanumeric()))
+}
+
+/// When the default `title` of a meeting begins with the user's command phrase
+/// ("ابي اجتماع"), the subject the user named after "عن" / "about" if there is
+/// one, else the title without the command phrase. `None` when the title is
+/// not a command phrase.
+fn subject_title(user_text: &str, title: &str) -> Option<String> {
+    let title_tokens: Vec<&str> = title.split_whitespace().collect();
+    let title_words: Vec<String> = title_tokens.iter().map(|t| core_word(t)).collect();
+    let want = WANT_PHRASES.iter().find(|p| title_words.len() >= p.len() && p.iter().zip(&title_words).all(|(a, b)| a == b))?;
+    let own = lang::without_command_and_time(user_text);
+    let tokens: Vec<&str> = own.split_whitespace().collect();
+    let words: Vec<String> = tokens.iter().map(|t| core_word(t)).collect();
+    if let Some(marker) = words.iter().position(|w| SUBJECT_MARKERS.contains(&w.as_str())) {
+        let subject: Vec<&str> = tokens[marker + 1..]
+            .iter()
+            .copied()
+            .zip(&words[marker + 1..])
+            .take_while(|(_, w)| !matches!(w.as_str(), "with" | "مع"))
+            .map(|(t, _)| t)
+            .collect();
+        let subject = subject.join(" ").trim_matches(|c: char| c.is_whitespace() || ",.;:!?،؛؟".contains(c)).to_string();
+        if !subject.is_empty() {
+            return Some(subject);
+        }
+    }
+    let rest = title_tokens[want.len()..].join(" ");
+    Some(if rest.is_empty() { (if lang::has_letters(user_text, Language::Arabic) { "اجتماع" } else { "Meeting" }).to_string() } else { rest })
+}
+
+/// Shown instead of a reply that is mostly in a script that does not belong.
+const APOLOGY_EN: &str = "Sorry, I could not write a clear answer. Please ask again.";
+const APOLOGY_AR: &str = "عذرًا، لم أتمكن من كتابة إجابة واضحة. من فضلك اسأل مرة أخرى.";
 
 /// The reminder text: the user's own words without the command and the time,
 /// so the model's wording, which can change the meaning, never reaches the
@@ -529,7 +591,6 @@ mod tests {
 
     use super::*;
     use crate::datetime::Date;
-    use crate::guard::Script;
     use crate::tools::FixedClock;
 
     const TODAY: Date = Date { year: 2026, month: 10, day: 30 };
@@ -946,6 +1007,27 @@ mod tests {
     }
 
     #[test]
+    fn a_command_phrase_is_never_the_title() {
+        // dialect-gulf-011 took "ابي اجتماع" as the title.
+        let (title, attendees, _) = meeting_for(
+            "ابي اجتماع مع إسلام يوم الاثنين الساعة 11 الصبح عن المشروع الجديد.",
+            "اجتماع",
+            &["إسلام"],
+        );
+        assert_eq!((title.as_str(), attendees.as_slice()), ("المشروع الجديد", ["إسلام".to_string()].as_slice()));
+        for (user, expected) in [
+            ("ابي اجتماع مع إسلام بكرة الساعة 3 العصر", "اجتماع مع إسلام"),
+            ("بدي اجتماع بخصوص الميزانية مع سارة بكرة الساعة 3 العصر", "الميزانية"),
+            ("عايز اجتماع مع الفريق عن خطة التسويق مع سارة بكرة الساعة 3 العصر", "خطة التسويق"),
+            ("I want a meeting with Sara about the budget tomorrow at 3 pm", "the budget"),
+            ("I need a meeting tomorrow at 3 pm", "a meeting"),
+        ] {
+            let (title, _, _) = meeting_for(user, "x", &[]);
+            assert_eq!(title, expected, "{user}");
+        }
+    }
+
+    #[test]
     fn the_default_title_stops_before_a_named_attendee() {
         let (title, attendees, _) = meeting_for("Schedule a team meeting with Sara tomorrow at 3 pm", "x", &["Sara"]);
         assert_eq!((title.as_str(), attendees.as_slice()), ("team meeting", ["Sara".to_string()].as_slice()));
@@ -1015,16 +1097,10 @@ mod tests {
     }
 
     #[test]
-    fn russian_in_an_arabic_reply_is_flagged_with_the_reply() {
+    fn russian_in_an_arabic_reply_is_removed_from_the_reply() {
         let m = model(Ok(ModelReply::Text("تم فتح الملف привет بنجاح".into())));
         let (outcome, _) = turn(&m, "اشرح لي ما حدث", Language::Arabic);
-        assert_eq!(
-            outcome,
-            Outcome::Reply {
-                text: "تم فتح الملف привет بنجاح".into(),
-                issues: vec![Issue { script: Script::Cyrillic, word: "привет".into() }],
-            }
-        );
+        assert_eq!(outcome, reply("تم فتح الملف بنجاح"));
     }
 
     #[test]
@@ -1180,41 +1256,34 @@ mod tests {
         let m = model_seq(vec![text(bad), text(good)]);
         assert_eq!(turn(&m, "اشرح لي ما حدث", Language::Arabic), (Outcome::Reply { text: good.into(), issues: vec![] }, 2));
         assert!(m.last_system.borrow().contains("Reply again in Arabic"));
-        // The retry is worse: the first reply is kept with its issues.
-        let worse = "تم فتح الملف привет مرحبا بنجاح";
+        // The retry is worse: the first reply is kept, and its leaked word is removed.
+        let worse = "تم فتح الملف привет مرحبا بنجاح мир";
         let m = model_seq(vec![text(bad), text(worse)]);
         let (outcome, calls) = turn(&m, "اشرح لي ما حدث", Language::Arabic);
-        assert_eq!(calls, 2);
-        assert_eq!(
-            outcome,
-            Outcome::Reply { text: bad.into(), issues: vec![Issue { script: Script::Cyrillic, word: "привет".into() }] }
-        );
+        assert_eq!((outcome, calls), (reply(good), 2));
         // The retry is just as bad: the first reply is kept, and there is no third call.
         let m = model_seq(vec![text(bad), text(bad)]);
         assert_eq!(turn(&m, "اشرح لي ما حدث", Language::Arabic).1, 2);
     }
 
     #[test]
-    fn retry_with_fewer_issues_is_returned_with_its_issues() {
-        let two = "ملف привет и мир";
-        let one = "ملف привет";
+    fn retry_with_fewer_issues_is_returned() {
+        let two = "تم فتح الملف привет и мир";
+        let one = "تم فتح الملف привет";
         let m = model_seq(vec![text(two), text(one)]);
         let (outcome, calls) = turn(&m, "اشرح", Language::Arabic);
         assert_eq!(calls, 2);
-        assert_eq!(
-            outcome,
-            Outcome::Reply { text: one.into(), issues: vec![Issue { script: Script::Cyrillic, word: "привет".into() }] }
-        );
+        assert_eq!(outcome, reply("تم فتح الملف"));
     }
 
     #[test]
-    fn failed_or_tool_retry_keeps_the_first_reply() {
+    fn failed_or_tool_retry_keeps_the_first_reply_without_its_leaked_word() {
         let bad = "تم فتح الملف привет بنجاح";
         for retry in [Err("local provider: request failed".to_string()), call("open_app", r#"{"name":"x"}"#)] {
             let m = model_seq(vec![text(bad), retry]);
             let (outcome, calls) = turn(&m, "اشرح لي ما حدث", Language::Arabic);
             assert_eq!(calls, 2);
-            assert!(matches!(outcome, Outcome::Reply { ref text, ref issues } if text == bad && issues.len() == 1), "{outcome:?}");
+            assert_eq!(outcome, reply("تم فتح الملف بنجاح"));
         }
     }
 
@@ -1408,8 +1477,10 @@ mod tests {
         assert!(!w.last_system.borrow().contains("opening the music app"));
     }
 
+    type DialectPrompt = (String, String, Language, Option<(String, String)>);
+
     /// The dialect benchmark prompts: (id, text, language, expected tool name and arguments).
-    fn dialect_prompts() -> Vec<(String, String, Language, Option<(String, String)>)> {
+    fn dialect_prompts() -> Vec<DialectPrompt> {
         include_str!("../eval/prompts-dialects.jsonl")
             .lines()
             .map(|line| {
@@ -1481,14 +1552,83 @@ mod tests {
         assert_eq!(calls, 2);
         assert_eq!(outcome, reply("الواي فاي اتصال لاسلكي."));
         assert!(m.last_system.borrow().contains("foreign script"));
-        // When the second answer is as bad, the first is kept and the words are reported.
-        let m = model_seq(vec![text("الواي فاي是一种شبكة"), text("الداتا 也是شبكة")]);
-        match turn(&m, "إيه الفرق بين الواي فاي والداتا؟", Language::Arabic).0 {
-            Outcome::Reply { issues, .. } => {
-                assert!(!issues.is_empty() && issues.iter().all(|i| i.script == guard::Script::Cjk));
-            }
-            other => panic!("{other:?}"),
+    }
+
+    #[test]
+    fn leaked_characters_are_removed_when_a_sensible_reply_is_left() {
+        // The retry is as bad: only the leaked runs go, the rest is shown.
+        let m = model_seq(vec![
+            text("الواي فاي هو اتصال لاسلكي 移动 بالراوتر، والداتا هي إنترنت الموبايل（移动网络）."),
+            text("الواي فاي اتصال لاسلكي 移动 بالراوتر، والداتا إنترنت الموبايل."),
+        ]);
+        let (outcome, calls) = turn(&m, "إيه الفرق بين الواي فاي والداتا؟", Language::Arabic);
+        assert_eq!(calls, 2);
+        assert_eq!(outcome, reply("الواي فاي اتصال لاسلكي بالراوتر، والداتا إنترنت الموبايل."));
+        // Cyrillic in an English reply, and no retry text at all.
+        let m = model(text("Wi-Fi is a wireless link to your router, while data uses the phone network. Привет"));
+        let (outcome, calls) = turn(&m, "What is the difference between Wi-Fi and data?", Language::English);
+        assert_eq!(calls, 2);
+        assert_eq!(
+            outcome,
+            reply("Wi-Fi is a wireless link to your router, while data uses the phone network.")
+        );
+    }
+
+    #[test]
+    fn a_reply_that_is_mostly_leaked_characters_becomes_a_fixed_apology() {
+        for (user, language, bad, apology) in [
+            ("إيه الفرق بين الواي فاي والداتا؟", Language::Arabic, "移动网络是一种无线连接方式 شبكة", APOLOGY_AR),
+            ("What is Wi-Fi?", Language::English, "移动", APOLOGY_EN),
+            ("What is Wi-Fi?", Language::English, "Это беспроводная сеть, Wi-Fi", APOLOGY_EN),
+        ] {
+            let m = model(text(bad));
+            let (outcome, calls) = turn(&m, user, language);
+            assert_eq!((outcome, calls), (reply(apology), 2), "{bad}");
         }
+        assert!(guard::check_reply(APOLOGY_AR, Language::Arabic).is_empty());
+        assert!(guard::check_reply(APOLOGY_EN, Language::English).is_empty());
+        // A failed retry call still ends in the apology.
+        let m = model_seq(vec![text("移动"), Err("down".into())]);
+        assert_eq!(turn(&m, "What is Wi-Fi?", Language::English), (reply(APOLOGY_EN), 2));
+    }
+
+    #[test]
+    fn a_script_the_user_wrote_or_asked_for_is_kept() {
+        let m = model(text("你好"));
+        assert_eq!(turn(&m, "How do you say hello in Chinese?", Language::English), (reply("你好"), 1));
+        let m = model(text("Привет"));
+        assert_eq!(turn(&m, "ترجم مرحبا إلى الروسية", Language::Arabic), (reply("Привет"), 1));
+        let m = model(text("移动 means mobile."));
+        assert_eq!(turn(&m, "What does 移动 mean?", Language::English), (reply("移动 means mobile."), 1));
+    }
+
+    #[test]
+    fn a_reply_that_offers_a_missing_ability_is_retried_once() {
+        let bad = "I can delete the old files for you.";
+        let good = "Old files are best reviewed by hand; keep what you still use.";
+        let user = "My downloads folder is a mess, what should I do?";
+        let m = model_seq(vec![text(bad), text(good)]);
+        assert_eq!(turn(&m, user, Language::English), (reply(good), 2));
+        assert!(m.last_system.borrow().contains("cannot do here"));
+        let m = model_seq(vec![text(bad), text(bad)]);
+        assert_eq!(turn(&m, user, Language::English), (reply(bad), 2));
+        let m = model(text(good));
+        assert_eq!(turn(&m, user, Language::English).1, 1);
+        let m = model_seq(vec![text("سأحذف الملفات القديمة لك."), text("راجع الملفات القديمة بنفسك.")]);
+        assert_eq!(turn(&m, "مجلد التنزيلات مليان، شو أعمل؟", Language::Arabic), (reply("راجع الملفات القديمة بنفسك."), 2));
+    }
+
+    #[test]
+    fn the_ability_check_gets_the_tools_that_were_offered() {
+        // list_files is offered to the command model, so listing is no false claim there.
+        let m = model(text("I can list the files in your Documents folder."));
+        assert_eq!(turn(&m, "hello there", Language::English).1, 1);
+        assert!(offered_tools(&m).contains(&"list_files".to_string()));
+        // The writer has no tools, so the same sentence is a claim on the writer.
+        let m = model(text("command model text"));
+        let w = model_seq(vec![text("I can list the files in your Documents folder."), text("Hello! How can I help?")]);
+        let (outcome, cmd, writer) = turn_with_writer(&m, &w, "hello there", Language::English);
+        assert_eq!((outcome, cmd, writer), (reply("Hello! How can I help?"), 1, 2));
     }
 
     #[test]
