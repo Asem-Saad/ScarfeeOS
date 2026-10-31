@@ -10,13 +10,20 @@ use std::fs::{self, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::datetime::{Date, Repeat};
 use crate::tools::ToolCall;
 
 const PRODID: &str = "-//ScarfeeOS//Calendar//EN";
 const FOLD_LIMIT: usize = 75;
+/// How long a writer waits for another writer before giving up.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
+/// A lock file older than this was left by a process that died. A writer holds
+/// the lock for milliseconds.
+const LOCK_STALE: Duration = Duration::from_secs(5);
+const LOCK_POLL: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CalendarError {
@@ -142,6 +149,7 @@ impl CalendarStore {
         let attendees: Vec<String> =
             attendees.iter().map(|a| clean_param(a)).filter(|a| !a.is_empty()).collect();
 
+        let _lock = Lock::acquire(&self.path)?;
         let mut items = self.load()?;
         let stamp = format_stamp(clock.unix_seconds());
         let uid = unique_uid(&stamp, &items);
@@ -180,6 +188,7 @@ impl CalendarStore {
 
     /// Removes every event with this UID. Returns whether any was found.
     pub fn delete(&self, uid: &str) -> Result<bool, CalendarError> {
+        let _lock = Lock::acquire(&self.path)?;
         let mut items = self.load()?;
         let before = items.len();
         items.retain(|item| !matches!(item, Item::Component { uid: Some(u), .. } if u == uid));
@@ -575,19 +584,110 @@ fn parse_ics_start(value: &str) -> Option<Start> {
     }
 }
 
-/// Writes to a temporary file in the same directory, then renames it over the
-/// store, so a crash leaves either the old file or the new one.
-fn write_atomic(path: &Path, data: &[u8]) -> Result<(), CalendarError> {
+/// Opens a new private file. On Unix it is created 0600, so it is never
+/// readable by others, even for an instant.
+fn create_new_private(path: &Path) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
+
+fn sibling(path: &Path, suffix: &str) -> Result<PathBuf, CalendarError> {
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = path
         .file_name()
         .ok_or_else(|| CalendarError::Io("path has no file name".into()))?
         .to_string_lossy();
-    let tmp = dir.join(format!(".{name}.{:016x}.tmp", random_u64()));
+    Ok(dir.join(format!(".{name}.{suffix}")))
+}
+
+/// An exclusive lock on the calendar, held from reading to renaming so that
+/// two writers cannot both start from the same old contents. It is a file
+/// created with `create_new`, and it is removed when the guard is dropped.
+struct Lock {
+    path: PathBuf,
+    token: String,
+}
+
+impl Lock {
+    fn acquire(store: &Path) -> Result<Lock, CalendarError> {
+        let path = sibling(store, "lock")?;
+        let token = format!("{}-{:016x}", std::process::id(), random_u64());
+        let deadline = Instant::now() + LOCK_WAIT;
+        loop {
+            match create_new_private(&path) {
+                Ok(mut file) => {
+                    let written = file.write_all(token.as_bytes());
+                    drop(file);
+                    if let Err(e) = written {
+                        let _ = fs::remove_file(&path);
+                        return Err(e.into());
+                    }
+                    return Ok(Lock { path, token });
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    if Lock::break_if_stale(&path)? {
+                        continue;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(CalendarError::Io("calendar is locked by another writer".into()));
+                    }
+                    thread::sleep(LOCK_POLL);
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    /// Removes a lock left by a crashed process. Returns whether it did.
+    fn break_if_stale(path: &Path) -> Result<bool, CalendarError> {
+        let age = |p: &Path| -> Option<Duration> {
+            fs::metadata(p).ok()?.modified().ok()?.elapsed().ok()
+        };
+        if !age(path).is_some_and(|a| a >= LOCK_STALE) {
+            return Ok(false);
+        }
+        // Rename first: of several waiters that all saw the stale file, only
+        // one rename succeeds, and nobody deletes a lock another waiter has
+        // just created in its place.
+        let moved = sibling(path, &format!("{:016x}.stale", random_u64()))?;
+        if fs::rename(path, &moved).is_err() {
+            return Ok(false);
+        }
+        if age(&moved).is_some_and(|a| a >= LOCK_STALE) {
+            let _ = fs::remove_file(&moved);
+            return Ok(true);
+        }
+        // We moved a fresh lock that replaced the stale one. Put it back,
+        // unless someone has already taken the name.
+        let _ = fs::hard_link(&moved, path);
+        let _ = fs::remove_file(&moved);
+        Ok(false)
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        // Leave the file alone if it was broken as stale and is now another
+        // writer's.
+        if fs::read_to_string(&self.path).is_ok_and(|t| t == self.token) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Writes to a temporary file in the same directory, then renames it over the
+/// store, so a crash leaves either the old file or the new one. On Unix the
+/// result is always 0600, which also tightens an older, wider file.
+fn write_atomic(path: &Path, data: &[u8]) -> Result<(), CalendarError> {
+    let tmp = sibling(path, &format!("{:016x}.tmp", random_u64()))?;
     let result = (|| -> io::Result<()> {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let mut file = create_new_private(&tmp)?;
         file.write_all(data)?;
         file.sync_all()?;
+        #[cfg(not(unix))]
         if let Ok(meta) = fs::metadata(path) {
             fs::set_permissions(&tmp, meta.permissions())?;
         }
@@ -953,5 +1053,121 @@ mod tests {
             );
         }
         assert!(!dir.file().exists());
+    }
+
+    #[test]
+    fn concurrent_writers_lose_no_events() {
+        let dir = TempDir::new();
+        let path = dir.file();
+        let handles: Vec<_> = (0..8)
+            .map(|t| {
+                let path = path.clone();
+                thread::spawn(move || {
+                    let store = CalendarStore::new(path);
+                    (0..10)
+                        .map(|i| store.add(&NOW, &reminder(&format!("t{t}-{i}"), "2026-11-05", None)).unwrap().uid)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut uids: Vec<String> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        let stored = CalendarStore::new(&path).list_upcoming(FROM).unwrap();
+        assert_eq!(stored.len(), 80);
+        let mut stored_uids: Vec<String> = stored.into_iter().map(|o| o.event.uid).collect();
+        uids.sort();
+        stored_uids.sort();
+        assert_eq!(stored_uids, uids);
+        let names: Vec<_> = fs::read_dir(&dir.0).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["calendar.ics"], "lock or temporary file left behind");
+    }
+
+    #[test]
+    fn concurrent_adds_and_deletes_do_not_resurrect_or_lose_events() {
+        let dir = TempDir::new();
+        let path = dir.file();
+        let store = CalendarStore::new(&path);
+        let doomed: Vec<String> =
+            (0..20).map(|i| store.add(&NOW, &reminder(&format!("d{i}"), "2026-11-05", None)).unwrap().uid).collect();
+        let deleter = {
+            let path = path.clone();
+            thread::spawn(move || {
+                let store = CalendarStore::new(path);
+                for uid in &doomed {
+                    assert!(store.delete(uid).unwrap());
+                }
+            })
+        };
+        let adder = {
+            let path = path.clone();
+            thread::spawn(move || {
+                let store = CalendarStore::new(path);
+                (0..20).map(|i| store.add(&NOW, &reminder(&format!("k{i}"), "2026-11-06", None)).unwrap().uid).collect::<Vec<_>>()
+            })
+        };
+        deleter.join().unwrap();
+        let mut kept = adder.join().unwrap();
+        let mut left: Vec<String> = store.list_upcoming(FROM).unwrap().into_iter().map(|o| o.event.uid).collect();
+        kept.sort();
+        left.sort();
+        assert_eq!(left, kept);
+    }
+
+    #[test]
+    fn a_stale_lock_from_a_crashed_process_is_broken() {
+        let dir = TempDir::new();
+        let store = CalendarStore::new(dir.file());
+        let lock = sibling(&dir.file(), "lock").unwrap();
+        let file = fs::File::create(&lock).unwrap();
+        file.set_modified(SystemTime::now() - LOCK_STALE - Duration::from_secs(1)).unwrap();
+        drop(file);
+        store.add(&NOW, &reminder("a", "2026-11-05", None)).unwrap();
+        assert!(!lock.exists());
+        assert_eq!(store.list_upcoming(FROM).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_fresh_lock_blocks_until_released() {
+        let dir = TempDir::new();
+        let path = dir.file();
+        let held = Lock::acquire(&path).unwrap();
+        let writer = {
+            let path = path.clone();
+            thread::spawn(move || CalendarStore::new(path).add(&NOW, &reminder("a", "2026-11-05", None)).unwrap())
+        };
+        thread::sleep(Duration::from_millis(100));
+        assert!(!path.exists(), "writer got past a held lock");
+        drop(held);
+        writer.join().unwrap();
+        assert_eq!(CalendarStore::new(&path).list_upcoming(FROM).unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_calendar_file_is_private() {
+        let dir = TempDir::new();
+        let store = CalendarStore::new(dir.file());
+        store.add(&NOW, &reminder("a", "2026-11-05", None)).unwrap();
+        assert_eq!(mode(&dir.file()), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_wide_file_is_tightened_on_the_next_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new();
+        let store = CalendarStore::new(dir.file());
+        let a = store.add(&NOW, &reminder("a", "2026-11-05", None)).unwrap();
+        fs::set_permissions(dir.file(), fs::Permissions::from_mode(0o644)).unwrap();
+        store.add(&NOW, &reminder("b", "2026-11-06", None)).unwrap();
+        assert_eq!(mode(&dir.file()), 0o600);
+        fs::set_permissions(dir.file(), fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(store.delete(&a.uid).unwrap());
+        assert_eq!(mode(&dir.file()), 0o600);
     }
 }
