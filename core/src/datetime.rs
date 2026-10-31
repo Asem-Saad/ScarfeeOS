@@ -240,6 +240,30 @@ fn arabic_hour(word: &str) -> Option<u32> {
     }
 }
 
+/// True when `words[i]` says that the number after it is a time: الساعة, or
+/// ساعة with no article ("يوم الخميس ساعة 5"). Without the article it must be
+/// followed by an hour, and it is a count when anything makes it one: "بعد
+/// ساعة", "كل ساعة", "ساعة واحدة", "اربع ساعة 5", "ساعة 5 دقايق".
+pub(crate) fn hour_marker(words: &[String], i: usize) -> bool {
+    match words.get(i).map(String::as_str) {
+        Some("الساعه") => return true,
+        Some("ساعه") => {}
+        _ => return false,
+    }
+    let Some(hour) = words.get(i + 1) else { return false };
+    if clock(hour).is_none() && arabic_hour(hour).is_none() {
+        return false;
+    }
+    if words.get(i + 2).is_some_and(|unit| COUNTED.contains(&unit.as_str())) {
+        return false;
+    }
+    let Some(p) = i.checked_sub(1) else { return true };
+    let prev = words[p].as_str();
+    let counted_number = prev.bytes().all(|b| b.is_ascii_digit())
+        || ((NUMBER_FORMS.contains(&prev) || DEFINITE_NUMBER_FORMS.contains(&prev)) && weekday_at(words, p).is_none());
+    !(counted_number || matches!(prev, "بعد" | "عقب" | "كل" | "after" | "every" | "نص" | "نصف" | "ربع" | "ثلث"))
+}
+
 fn clock(word: &str) -> Option<(u32, u32)> {
     let (h, m) = word.split_once(':').unwrap_or((word, "0"));
     let time = (h.parse().ok()?, m.parse().ok()?);
@@ -283,8 +307,9 @@ pub fn resolve(text: &str, today: Date) -> Option<Resolved> {
         if time.is_some() {
             continue;
         }
-        let marked = matches!(prev, Some("at") | Some("الساعه"));
-        if prev == Some("الساعه") {
+        let after_marker = i > 0 && hour_marker(&words, i - 1);
+        let marked = prev == Some("at") || after_marker;
+        if after_marker {
             if let Some(hour) = arabic_hour(word) {
                 // الثانية عشرة is 12, الحادية عشرة is 11, العاشرة alone is 10.
                 time = Some(match (hour, next) {
@@ -598,6 +623,42 @@ mod tests {
         }
         assert_eq!(resolve("كل خميس ساعة 5", TODAY).unwrap().repeat, Some(Repeat::Weekly));
         assert_eq!(resolve("كل يوم تلات ساعة 5", TODAY).unwrap().repeat, Some(Repeat::Weekly));
+    }
+
+    #[test]
+    fn an_hour_word_without_the_article_reads_a_time_like_the_one_with_it() {
+        for (plain, with_article) in [
+            ("ساعة 5", "الساعة 5"),
+            ("ساعة ٥", "الساعة ٥"),
+            ("ساعة 5:30", "الساعة 5:30"),
+            ("ساعة 5 ونص", "الساعة 5 ونص"),
+            ("ساعة الخامسة", "الساعة الخامسة"),
+            ("ساعة الثانية عشرة", "الساعة الثانية عشرة"),
+            ("بكرة ساعة 5 العصر", "بكرة الساعة 5 العصر"),
+            ("بكرة ساعة ٧ مساء", "بكرة الساعة ٧ مساء"),
+            ("يوم الخميس ساعة 5", "يوم الخميس الساعة 5"),
+            ("التلات ساعة ٥ العصر", "التلات الساعة ٥ العصر"),
+            ("كل خميس ساعة 5", "كل خميس الساعة 5"),
+            ("بكرة ساعة 12 بالليل", "بكرة الساعة 12 بالليل"),
+        ] {
+            assert_eq!(resolve(plain, TODAY), resolve(with_article, TODAY), "{plain}");
+        }
+        assert_eq!(iso("ذكرني يوم الخميس ساعة 5"), "2026-11-05T05:00:00");
+        assert_eq!(iso("بكرة ساعة ٥ العصر"), "2026-10-31T17:00:00");
+        assert_eq!(iso("بكرة ساعة الخامسة"), "2026-10-31T05:00:00");
+        // With no day part it is as unclear as الساعة 5.
+        assert!(resolve("ساعة 5", TODAY).unwrap().ambiguous);
+        assert!(resolve("يوم الخميس ساعة 5", TODAY).unwrap().ambiguous);
+        assert!(!resolve("بكرة ساعة 5 العصر", TODAY).unwrap().ambiguous);
+        assert!(!resolve("بكرة ساعة 17:00", TODAY).unwrap().ambiguous);
+    }
+
+    #[test]
+    fn an_hour_word_that_counts_is_not_a_time() {
+        for text in ["بعد ساعة", "بعد 5 ساعات", "ساعة واحدة", "كل ساعة", "كل ساعة 5", "بعد ساعة 5 دقايق", "كل اربع ساعة 5"] {
+            assert_eq!(resolve(text, TODAY), None, "{text}");
+        }
+        assert_eq!(resolve("يوم الخميس ساعة واحدة", TODAY).unwrap().time, None);
     }
 
     #[test]

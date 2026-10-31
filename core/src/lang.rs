@@ -1,4 +1,4 @@
-use crate::datetime::{names_prayer, weekday_at};
+use crate::datetime::{hour_marker, names_prayer, weekday_at};
 
 /// Languages ScarfeeOS supports as main languages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,13 +274,13 @@ fn is_time_word(words: &[String], i: usize) -> bool {
     let prev = i.checked_sub(1).map(|p| words[p].as_str());
     let next = words.get(i + 1).map(String::as_str);
     let before_part = next.is_some_and(|n| PART_WORDS.contains(&n));
-    let after_marker = matches!(prev, Some("at") | Some("الساعه"));
+    let after_marker = prev == Some("at") || (i > 0 && hour_marker(words, i - 1));
     DAY_WORDS.contains(&word)
         || weekday_at(words, i).is_some()
         || (PART_WORDS.contains(&word) && !names_prayer(prev))
         || is_clock(word)
         || (!word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()) && (after_marker || before_part))
-        || (HOUR_WORDS.contains(&word) && (prev == Some("الساعه") || before_part))
+        || (HOUR_WORDS.contains(&word) && ((i > 0 && hour_marker(words, i - 1)) || before_part))
         || (word == "عشره" && i > 0 && HOUR_WORDS.contains(&words[i - 1].as_str()) && is_time_word(words, i - 1))
         || (word == "day" && prev == Some("every"))
         || (word == "day" && next == Some("after") && words.get(i + 2).is_some_and(|w| w == "tomorrow"))
@@ -292,7 +292,7 @@ fn time_mask(words: &[String]) -> Vec<bool> {
     let mut time = vec![false; words.len()];
     for i in (0..words.len()).rev() {
         time[i] = is_time_word(words, i)
-            || (LINKS.contains(&words[i].as_str()) && time.get(i + 1).copied().unwrap_or(false));
+            || ((LINKS.contains(&words[i].as_str()) || hour_marker(words, i)) && time.get(i + 1).copied().unwrap_or(false));
     }
     time
 }
@@ -582,9 +582,8 @@ mod tests {
     #[test]
     fn a_weekday_before_the_hour_word_is_removed_as_a_day_and_counts_stay() {
         for (text, expected) in [
-            ("اتصل بالبنك يوم الخميس ساعة 5", "اتصل بالبنك ساعة 5"),
-            ("اتصل بالبنك الخميس ساعة", "اتصل بالبنك ساعة"),
-            ("اتصل بالبنك يوم التلات ساعة", "اتصل بالبنك ساعة"),
+            ("اتصل بالبنك يوم الخميس ساعة", "اتصل بالبنك ساعة"),
+                        ("اتصل بالبنك يوم التلات ساعة", "اتصل بالبنك ساعة"),
             ("اتصل بالبنك يوم تلات ساعة", "اتصل بالبنك ساعة"),
             ("اتصل بالبنك يوم اربع ساعة", "اتصل بالبنك ساعة"),
             ("اتصل بالبنك التلات ساعة", "اتصل بالبنك ساعة"),
@@ -613,7 +612,7 @@ mod tests {
             }
         };
         for (text, time, repeat, task) in [
-            ("ذكرني يوم الخميس ساعة 5", "2026-11-05", None, "ساعة 5"),
+            ("ذكرني يوم الخميس ساعة 5", "2026-11-05T05:00:00", None, ""),
             ("ذكرني اتصل بالبنك يوم الخميس ساعة", "2026-11-05", None, "اتصل بالبنك ساعة"),
             ("ذكرني اتصل بالبنك يوم التلات ساعة", "2026-11-03", None, "اتصل بالبنك ساعة"),
             ("ذكرني اتصل بالبنك يوم تلات ساعة", "2026-11-03", None, "اتصل بالبنك ساعة"),
@@ -629,6 +628,78 @@ mod tests {
             assert!(run(text).is_none(), "{text}");
         }
         assert_eq!(without_command_and_time("ذكرني اشرب مي كل اربع ساعات"), "اشرب مي كل اربع ساعات");
+    }
+
+    #[test]
+    fn an_hour_word_without_the_article_is_removed_with_its_time_and_counts_stay() {
+        for (text, expected) in [
+            ("اتصل بالبنك يوم الخميس ساعة 5", "اتصل بالبنك"),
+            ("اتصل بالبنك الخميس ساعة 5 العصر", "اتصل بالبنك"),
+            ("اتصل بالبنك بكرة ساعة ٥", "اتصل بالبنك"),
+            ("اتصل بالبنك بكرة ساعة 5:30 مساء", "اتصل بالبنك"),
+            ("اتصل بالبنك بكرة ساعة الخامسة", "اتصل بالبنك"),
+            ("اتصل بالبنك بكرة ساعة الثانية عشرة", "اتصل بالبنك"),
+            ("ساعة 5", ""),
+            ("اتصل بالبنك ساعة 5 ونص", "اتصل بالبنك ونص"),
+            ("اتصل بالبنك الساعة 5 ونص", "اتصل بالبنك ونص"),
+            ("اتصل بالبنك بعد ساعة", "اتصل بالبنك بعد ساعة"),
+            ("اتصل بالبنك بعد 5 ساعات", "اتصل بالبنك بعد 5 ساعات"),
+            ("اتصل بالبنك ساعة واحدة", "اتصل بالبنك ساعة واحدة"),
+            ("اتصل بالبنك كل ساعة", "اتصل بالبنك كل ساعة"),
+            ("اتصل بالبنك كل ساعة 5", "اتصل بالبنك كل ساعة 5"),
+            ("اتصل بالبنك بعد ساعة 5 دقايق", "اتصل بالبنك بعد ساعة 5 دقايق"),
+            ("اتصل بالبنك لمدة ساعة 5 دقايق", "اتصل بالبنك لمدة ساعة 5 دقايق"),
+            ("اكل كل اربع ساعة 5", "اكل كل اربع ساعة 5"),
+        ] {
+            assert_eq!(without_time_words(text, false), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_reminder_path_reads_an_hour_word_without_the_article_as_a_time() {
+        use crate::datetime::Date;
+        use crate::tools::{resolve_call, Resolution, ToolCall};
+        let today = Date::new(2026, 10, 30);
+        let run = |user_text: &str| {
+            let proposed = ToolCall::CreateReminder { text: "x".into(), time: "x".into(), repeat: None };
+            let (call, ambiguous) = match resolve_call(user_text, today, proposed) {
+                Resolution::Ready(call) => (call, false),
+                Resolution::NeedsClarification(call) => (call, true),
+                _ => return None,
+            };
+            match call {
+                ToolCall::CreateReminder { time, .. } => Some((time, ambiguous, without_command_and_time(user_text))),
+                _ => None,
+            }
+        };
+        // Egyptian and Gulf forms, with and without the article, give the same time.
+        for (text, time, ambiguous, task) in [
+            ("ذكرني يوم الخميس ساعة 5", "2026-11-05T05:00:00", true, ""),
+            ("ذكرني يوم الخميس الساعة 5", "2026-11-05T05:00:00", true, ""),
+            ("فكرني اتصل بالبنك التلات ساعة 5 العصر", "2026-11-03T17:00:00", false, "اتصل بالبنك"),
+            ("فكرني اتصل بالبنك التلات الساعة 5 العصر", "2026-11-03T17:00:00", false, "اتصل بالبنك"),
+            ("ابغاك تذكرني اتصل بالبنك بكرا ساعة ٧ مساء", "2026-10-31T19:00:00", false, "اتصل بالبنك"),
+            ("ابغاك تذكرني اتصل بالبنك بكرا الساعة ٧ مساء", "2026-10-31T19:00:00", false, "اتصل بالبنك"),
+            ("ذكرني اتصل بالبنك بكرة ساعة الخامسة", "2026-10-31T05:00:00", true, "اتصل بالبنك"),
+            ("ذكرني اتصل بالبنك بكرة الساعة الخامسة", "2026-10-31T05:00:00", true, "اتصل بالبنك"),
+            ("ذكرني اتصل بالبنك ساعة 5", "2026-10-30T05:00:00", true, "اتصل بالبنك"),
+            ("ذكرني اتصل بالبنك الساعة 5", "2026-10-30T05:00:00", true, "اتصل بالبنك"),
+            ("ذكرني اتصل بالبنك ساعة 5 ونص", "2026-10-30T05:00:00", true, "اتصل بالبنك ونص"),
+            ("ذكرني اتصل بالبنك الساعة 5 ونص", "2026-10-30T05:00:00", true, "اتصل بالبنك ونص"),
+        ] {
+            let got = run(text).unwrap_or_else(|| panic!("{text}"));
+            assert_eq!((got.0.as_str(), got.1, got.2.as_str()), (time, ambiguous, task), "{text}");
+        }
+        // Counts are not times: no date, so the caller asks, and the words stay.
+        for text in [
+            "ذكرني اشرب مي بعد ساعة",
+            "ذكرني اشرب مي بعد 5 ساعات",
+            "ذكرني اشرب مي ساعة واحدة",
+            "ذكرني اشرب مي كل ساعة",
+        ] {
+            assert!(run(text).is_none(), "{text}");
+            assert_eq!(without_command_and_time(text), text.strip_prefix("ذكرني ").unwrap(), "{text}");
+        }
     }
 
     #[test]
