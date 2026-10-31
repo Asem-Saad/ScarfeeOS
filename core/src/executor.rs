@@ -14,7 +14,7 @@ use std::fs::DirBuilder;
 use std::os::unix::fs::DirBuilderExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
@@ -46,6 +46,8 @@ struct Pending {
 
 pub struct Executor {
     files: FileSandbox,
+    /// The real folder behind the file root, or `None` when it cannot be read.
+    root: Option<PathBuf>,
     apps: AppTable,
     launcher: Box<dyn Launcher>,
     calendar: CalendarStore,
@@ -66,7 +68,8 @@ impl Executor {
     ) -> Self {
         let calendar_dir = calendar_file.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf);
         let calendar = CalendarStore::new(calendar_file);
-        Executor { files, apps, launcher, calendar, calendar_dir, utc, clock, pending: VecDeque::new() }
+        let root = files.list_files("").ok().map(|listing| listing.path);
+        Executor { files, root, apps, launcher, calendar, calendar_dir, utc, clock, pending: VecDeque::new() }
     }
 
     /// The real system: the user's home folder as the file root, the installed
@@ -194,13 +197,29 @@ impl Executor {
             ToolCall::SetLanguage { lang } => Ok(json!({"type": "language", "lang": lang.code()})),
             ToolCall::CurrentTime { .. } => Err(ActionError::Unsupported.into()),
             ToolCall::ListFiles { .. } | ToolCall::SearchFiles { .. } | ToolCall::OpenApp { .. } => {
+                if let ToolCall::ListFiles { path } = call {
+                    let root = self.root.as_deref().ok_or_else(|| {
+                        Failure::new("unreadable", "cannot read folder: the file root is not readable".into())
+                    })?;
+                    if names_hidden_part(path, root) {
+                        return Err(hidden_path());
+                    }
+                }
                 Ok(match actions::execute(call, &self.files, &self.apps, &*self.launcher)? {
-                    actions::Outcome::Listing(l) => json!({
-                        "type": "listing",
-                        "path": path_text(&l.path),
-                        "entries": entries_json(&l.entries),
-                        "truncated": l.truncated,
-                    }),
+                    actions::Outcome::Listing(l) => {
+                        // A symlink to a hidden folder is only seen here, once it is resolved.
+                        let inside = self.root.as_deref().and_then(|root| l.path.strip_prefix(root).ok());
+                        if inside.map_or(true, has_hidden_component) {
+                            return Err(hidden_path());
+                        }
+                        json!({
+                            "type": "listing",
+                            "path": path_text(&l.path),
+                            "display_path": display_text(&path_text(&l.path)),
+                            "entries": entries_json(&l.entries),
+                            "truncated": l.truncated,
+                        })
+                    }
                     actions::Outcome::Search(s) => json!({
                         "type": "search",
                         "matches": entries_json(&s.matches),
@@ -222,6 +241,10 @@ struct Failure {
 }
 
 impl Failure {
+    fn new(code: &'static str, message: String) -> Self {
+        Failure { code, message, closest: Vec::new() }
+    }
+
     fn to_json(&self) -> Value {
         let mut error = json!({"code": self.code, "message": self.message});
         if !self.closest.is_empty() {
@@ -439,6 +462,47 @@ fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn hidden_path() -> Failure {
+    Failure::new("hidden_path", "hidden folders are not listed".into())
+}
+
+/// A dot name hides a folder, as in `ls`. Windows hidden attributes are not read.
+fn has_hidden_component(path: &Path) -> bool {
+    path.components().any(|c| matches!(c, Component::Normal(name) if name.to_string_lossy().starts_with('.')))
+}
+
+/// Whether the path as written goes through a hidden folder below the root.
+/// A path outside the root is left to the sandbox, which refuses it.
+fn names_hidden_part(input: &str, root: &Path) -> bool {
+    let path = Path::new(input.trim());
+    let below_root = if let Ok(rest) = path.strip_prefix("~") {
+        rest
+    } else if path.is_absolute() {
+        match path.strip_prefix(root) {
+            Ok(rest) => rest,
+            Err(_) => return false,
+        }
+    } else {
+        path
+    };
+    has_hidden_component(below_root)
+}
+
+/// Bidirectional controls can reorder a name so that an .exe looks like a
+/// .txt. They are written out as `<U+202E>` instead. Arabic letters and
+/// everything else stay as they are.
+fn display_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}') {
+            out.push_str(&format!("<U+{:04X}>", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn entries_json(entries: &[FileEntry]) -> Vec<Value> {
     entries
         .iter()
@@ -449,7 +513,14 @@ fn entries_json(entries: &[FileEntry]) -> Vec<Value> {
                 EntryKind::Symlink => "symlink",
                 EntryKind::Other => "other",
             };
-            json!({"path": path_text(&e.path), "kind": kind})
+            let name = e.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            // `path` is the real name for any later operation; show `display_*` to the user.
+            json!({
+                "path": path_text(&e.path),
+                "display_path": display_text(&path_text(&e.path)),
+                "display_name": display_text(&name),
+                "kind": kind,
+            })
         })
         .collect()
 }
@@ -607,6 +678,127 @@ mod tests {
         assert_eq!(r["error"]["code"], "outside_root", "{r}");
         let r = env.executor.run(&ToolCall::SearchFiles { query: "  ".into() });
         assert_eq!(r["error"]["code"], "empty_query", "{r}");
+    }
+
+    fn error_code(r: &Value) -> Option<&str> {
+        r["error"]["code"].as_str()
+    }
+
+    fn display_names(r: &Value) -> Vec<String> {
+        r["entries"].as_array().unwrap().iter().map(|e| e["display_name"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn hidden_folders_are_refused_by_path_and_left_out_of_results() {
+        let env = Env::new();
+        let home = env.tmp.0.join("home");
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        fs::write(home.join(".ssh/id_secret"), "x").unwrap();
+        fs::create_dir_all(home.join("Documents/.private")).unwrap();
+        fs::write(home.join("Documents/.private/id_secret2"), "x").unwrap();
+        let by_absolute_path = home.join(".ssh").display().to_string();
+        for path in ["~/.ssh", ".ssh", "~/Documents/.private", "Documents/.private", "~/.ssh/..", "~/./.ssh/", &by_absolute_path] {
+            let r = env.executor.run(&ToolCall::ListFiles { path: path.into() });
+            assert_eq!((r["ok"].as_bool(), error_code(&r)), (Some(false), Some("hidden_path")), "{path}: {r}");
+            assert!(r["error"]["message"].as_str().unwrap().contains("hidden"), "{r}");
+            assert!(r.get("entries").is_none(), "{r}");
+        }
+
+        let r = env.executor.run(&ToolCall::ListFiles { path: "~".into() });
+        assert_eq!(display_names(&r), ["Documents", "notes.txt"], "{r}");
+        let r = env.executor.run(&ToolCall::ListFiles { path: "Documents".into() });
+        assert_eq!(display_names(&r), ["budget 2026.txt"], "{r}");
+        for query in ["id_secret", "ssh", "private"] {
+            let r = env.executor.run(&ToolCall::SearchFiles { query: query.into() });
+            assert_eq!(r["matches"].as_array().unwrap().len(), 0, "{query}: {r}");
+        }
+    }
+
+    // A symlink is judged by where it leads: one into a hidden folder is refused
+    // like the folder itself, one into a visible folder lists normally, and
+    // neither is followed by a search.
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_into_hidden_folders_are_refused() {
+        use std::os::unix::fs::symlink;
+        let env = Env::new();
+        let home = env.tmp.0.join("home");
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        fs::write(home.join(".ssh/id_secret"), "x").unwrap();
+        symlink(home.join(".ssh"), home.join("innocent")).unwrap();
+        symlink("Documents", home.join("shortcut")).unwrap();
+        symlink("../.ssh", home.join("Documents/relative")).unwrap();
+
+        for path in ["innocent", "~/innocent", "Documents/relative", "~/Documents/relative"] {
+            let r = env.executor.run(&ToolCall::ListFiles { path: path.into() });
+            assert_eq!(error_code(&r), Some("hidden_path"), "{path}: {r}");
+        }
+        let r = env.executor.run(&ToolCall::ListFiles { path: "shortcut".into() });
+        assert_eq!(display_names(&r), ["budget 2026.txt", "relative"], "{r}");
+        let r = env.executor.run(&ToolCall::SearchFiles { query: "id_secret".into() });
+        assert_eq!(r["matches"].as_array().unwrap().len(), 0, "{r}");
+        // The link itself is listed by name, as a symlink.
+        let r = env.executor.run(&ToolCall::ListFiles { path: "~".into() });
+        let link = r["entries"].as_array().unwrap().iter().find(|e| e["display_name"] == "innocent").unwrap();
+        assert_eq!(link["kind"], "symlink", "{r}");
+    }
+
+    #[test]
+    fn bidi_controls_are_shown_as_text_but_the_real_name_is_kept() {
+        let env = Env::new();
+        let home = env.tmp.0.join("home");
+        // Reads as "reportexe.txt" on screen, but is an .exe.
+        let real = "report\u{202E}txt.exe";
+        fs::write(home.join(real), "x").unwrap();
+        let r = env.executor.run(&ToolCall::ListFiles { path: "~".into() });
+        assert_eq!(r["ok"], true, "{r}");
+        let entry = r["entries"].as_array().unwrap().iter().find(|e| e["display_name"] == "report<U+202E>txt.exe").unwrap();
+        let path = entry["path"].as_str().unwrap();
+        assert!(path.ends_with(real), "{path:?}");
+        assert!(entry["display_path"].as_str().unwrap().ends_with("report<U+202E>txt.exe"));
+        assert!(Path::new(path).is_file(), "the real name must still open the file");
+
+        let r = env.executor.run(&ToolCall::SearchFiles { query: "report".into() });
+        assert_eq!(r["matches"][0]["display_name"], "report<U+202E>txt.exe", "{r}");
+        assert_eq!(r["matches"][0]["path"], entry["path"], "{r}");
+
+        // A folder with a control in its name: the listing path shows it safely too.
+        fs::create_dir(home.join("dir\u{2067}x")).unwrap();
+        let r = env.executor.run(&ToolCall::ListFiles { path: "dir\u{2067}x".into() });
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(r["display_path"].as_str().unwrap().ends_with("dir<U+2067>x"), "{r}");
+        assert!(r["path"].as_str().unwrap().ends_with("dir\u{2067}x"), "{r}");
+    }
+
+    #[test]
+    fn every_bidi_control_is_replaced_and_nothing_else() {
+        let controls = ('\u{202A}'..='\u{202E}').chain('\u{2066}'..='\u{2069}').chain(['\u{200E}', '\u{200F}', '\u{061C}']);
+        for c in controls {
+            let shown = display_text(&format!("a{c}b"));
+            assert_eq!(shown, format!("a<U+{:04X}>b", c as u32));
+        }
+        // Neighbours of the ranges, the zero width joiners used in Arabic and ordinary text.
+        for text in ["a\u{2029}b", "a\u{202F}b", "a\u{2065}b", "a\u{206A}b", "a\u{200D}b", "a\u{200C}b", "a\u{200B}b", "plain.txt"] {
+            assert_eq!(display_text(text), text);
+        }
+    }
+
+    #[test]
+    fn arabic_file_names_are_not_changed() {
+        let env = Env::new();
+        let home = env.tmp.0.join("home");
+        let name = "تقرير الميزانية ٢٠٢٦ ـ نهائي.txt";
+        fs::write(home.join(name), "x").unwrap();
+        fs::write(home.join("ملف\u{200F}.txt"), "x").unwrap();
+        let r = env.executor.run(&ToolCall::ListFiles { path: "~".into() });
+        let entry = r["entries"].as_array().unwrap().iter().find(|e| e["path"].as_str().unwrap().ends_with(name)).unwrap();
+        assert_eq!(entry["display_name"], name, "{r}");
+        assert_eq!(Path::new(entry["path"].as_str().unwrap()).file_name().unwrap(), name);
+        // Only the control mark goes; the Arabic letters around it stay.
+        assert!(display_names(&r).contains(&"ملف<U+200F>.txt".to_string()), "{r}");
+
+        let r = env.executor.run(&ToolCall::SearchFiles { query: "الميزانية".into() });
+        assert_eq!(r["matches"][0]["display_name"], name, "{r}");
     }
 
     #[test]
