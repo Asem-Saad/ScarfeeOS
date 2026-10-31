@@ -57,7 +57,8 @@
       control.value = settings.get()[key];
     }
     const sendButton = document.querySelector('#composer button[type="submit"]');
-    const { describeResponse, fill, formatElapsed, responseFromHttp } = ScarfeeRender;
+    const { describeResponse, fill, formatElapsed, packConversations, responseFromHttp, unpackConversations } = ScarfeeRender;
+    const CONVERSATIONS_KEY = 'scarfeeos.panel.conversations';
 
     let nextId = 1;
     const conversations = [];
@@ -243,7 +244,48 @@
       messageList.scrollTop = messageList.scrollHeight;
     }
 
+    // The conversation lasts for this browser session, so it survives a visit to the calendar. Storage can be
+    // missing, blocked or full: the panel then works as before and the conversation is only in memory.
+    function sessionStore() {
+      try {
+        return globalThis.sessionStorage || null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function saveConversations() {
+      try {
+        const store = sessionStore();
+        if (store) {
+          store.setItem(CONVERSATIONS_KEY, packConversations(conversations, active));
+        }
+      } catch (error) {
+        try {
+          sessionStore().removeItem(CONVERSATIONS_KEY);
+        } catch (ignored) {
+          // Nothing more can be done; the conversation stays in memory.
+        }
+      }
+    }
+
+    function restoreConversations() {
+      try {
+        const store = sessionStore();
+        const saved = store ? unpackConversations(store.getItem(CONVERSATIONS_KEY)) : null;
+        if (saved) {
+          conversations.push(...saved.conversations);
+          nextId = Math.max(...conversations.map((c) => c.id)) + 1;
+          active = conversations.find((c) => c.id === saved.activeId) || null;
+        }
+      } catch (error) {
+        conversations.length = 0;
+        active = null;
+      }
+    }
+
     function render() {
+      saveConversations();
       renderConversations();
       renderMessages();
     }
@@ -348,7 +390,12 @@
         .catch((error) => console.warn(lang, error))
     );
     Promise.all(loads).then(() => {
-      newConversation();
+      restoreConversations();
+      if (active) {
+        render();
+      } else {
+        newConversation();
+      }
       setLanguage(languageSelect.value);
     });
   }

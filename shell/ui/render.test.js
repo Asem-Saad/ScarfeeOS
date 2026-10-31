@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { parseFtl } = require('./i18n.js');
-const { fill, formatElapsed, formatTime, describeTool, describeResponse, responseFromHttp } = require('./render.js');
+const { fill, formatElapsed, formatTime, describeTool, describeResponse, responseFromHttp, packConversations, unpackConversations } = require('./render.js');
 
 const read = (...parts) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8');
 const catalogs = {
@@ -414,4 +414,58 @@ test('responseFromHttp takes a response body from the core or the bridge, else a
   for (const body of ['', 'not json', '[]', 'null', '{"kind":5}', '{}', '<html>']) {
     assert.deepStrictEqual(responseFromHttp(500, body), { kind: 'error', message: 'HTTP 500' }, body);
   }
+});
+
+test('packConversations and unpackConversations keep the text and roles, and mark every reply answered', () => {
+  const conversations = [
+    { id: 3, messages: [{ role: 'user', text: 'one' }, { role: 'assistant', startedAt: 5, response: { kind: 'needs_confirmation', action_id: 'a' }, answered: false }, { role: 'assistant', startedAt: 6, response: null }] },
+    { id: 2, messages: [] },
+    { id: 1, messages: [{ role: 'user', text: '<b>x</b>' }, { role: 'assistant', response: { kind: 'reply', text: 'ok' }, answered: true, chosenTime: '10:00' }] },
+  ];
+  const text = packConversations(conversations, conversations[2]);
+  assert.deepStrictEqual(JSON.parse(text), {
+    version: 1,
+    active: 1,
+    conversations: [
+      { id: 3, messages: [{ role: 'user', text: 'one' }, { role: 'assistant', response: { kind: 'needs_confirmation', action_id: 'a' } }] },
+      { id: 1, messages: [{ role: 'user', text: '<b>x</b>' }, { role: 'assistant', response: { kind: 'reply', text: 'ok' } }] },
+    ],
+  });
+  assert.deepStrictEqual(unpackConversations(text), {
+    activeId: 1,
+    conversations: [
+      { id: 3, messages: [{ role: 'user', text: 'one' }, { role: 'assistant', response: { kind: 'needs_confirmation', action_id: 'a' }, answered: true }] },
+      { id: 1, messages: [{ role: 'user', text: '<b>x</b>' }, { role: 'assistant', response: { kind: 'reply', text: 'ok' }, answered: true }] },
+    ],
+  });
+});
+
+test('unpackConversations drops what is not the expected shape and says null for nothing usable', () => {
+  for (const bad of [null, '', 'x', '[]', '{}', '{"version":1}', '{"version":2,"conversations":[]}', '{"version":1,"conversations":[]}']) {
+    assert.strictEqual(unpackConversations(bad), null, String(bad));
+  }
+  const text = JSON.stringify({
+    version: 1,
+    active: 7,
+    conversations: [
+      { id: 0, messages: [{ role: 'user', text: 'zero' }] },
+      { id: 1.5, messages: [{ role: 'user', text: 'fraction' }] },
+      { id: 4, messages: [{ role: 'user', text: 4 }, { role: 'system', text: 'x' }, { role: 'assistant', response: [] }, { role: 'assistant', response: { text: 'no kind' } }, 'str', { role: 'user', text: 'kept' }] },
+      { id: 4, messages: [{ role: 'user', text: 'duplicate id' }] },
+      { id: 5, messages: 'nope' },
+    ],
+  });
+  assert.deepStrictEqual(unpackConversations(text), { activeId: 7, conversations: [{ id: 4, messages: [{ role: 'user', text: 'kept' }] }] });
+});
+
+test('only the newest 200 messages are kept, when packing and when unpacking', () => {
+  const many = (id, count) => ({ id, messages: Array.from({ length: count }, (_, i) => ({ role: 'user', text: `m${id}-${i}` })) });
+  const packed = JSON.parse(packConversations([many(2, 150), many(1, 150)], null));
+  assert.deepStrictEqual(packed.conversations.map((c) => [c.id, c.messages.length]), [[2, 150], [1, 50]]);
+  assert.strictEqual(packed.conversations[1].messages[0].text, 'm1-100');
+  assert.strictEqual(packed.active, null);
+  const edited = JSON.stringify({ version: 1, active: 1, conversations: [many(1, 500)] });
+  const unpacked = unpackConversations(edited);
+  assert.strictEqual(unpacked.conversations[0].messages.length, 200);
+  assert.strictEqual(unpacked.conversations[0].messages[199].text, 'm1-499');
 });

@@ -427,7 +427,79 @@ function responseFromHttp(status, bodyText) {
   return { kind: 'error', message: `HTTP ${status}` };
 }
 
-const renderApi = { fill, formatElapsed, formatDate, formatTime, describeTool, describeResponse, responseFromHttp };
+const STORED_VERSION = 1;
+const MAX_STORED_MESSAGES = 200;
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+// The conversation as text for sessionStorage: the user's words and the core's responses, the same data the
+// panel draws from, so a restored message goes through the same rendering as a new one. A reply still waiting
+// is left out, and so is an empty conversation. Only the newest MAX_STORED_MESSAGES messages are kept.
+function packConversations(conversations, active) {
+  let budget = MAX_STORED_MESSAGES;
+  const packed = [];
+  for (const conversation of conversations) {
+    const messages = [];
+    for (const message of conversation.messages) {
+      if (message.role === 'user') {
+        messages.push({ role: 'user', text: String(message.text) });
+      } else if (isPlainObject(message.response)) {
+        messages.push({ role: 'assistant', response: message.response });
+      }
+    }
+    const kept = budget > 0 ? messages.slice(-budget) : [];
+    if (kept.length > 0) {
+      budget -= kept.length;
+      packed.push({ id: conversation.id, messages: kept });
+    }
+  }
+  return JSON.stringify({ version: STORED_VERSION, active: active ? active.id : null, conversations: packed });
+}
+
+// The reverse, for text that may be old, damaged or edited: anything that is not the expected shape is dropped
+// and null means nothing usable. Every restored reply is marked answered, so a Confirm or Cancel from an earlier
+// page can never be clicked again.
+function unpackConversations(text) {
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    return null;
+  }
+  if (!isPlainObject(data) || data.version !== STORED_VERSION || !Array.isArray(data.conversations)) {
+    return null;
+  }
+  let budget = MAX_STORED_MESSAGES;
+  const seen = new Set();
+  const conversations = [];
+  for (const stored of data.conversations) {
+    if (!isPlainObject(stored) || !Number.isSafeInteger(stored.id) || stored.id < 1 || seen.has(stored.id) || !Array.isArray(stored.messages)) {
+      continue;
+    }
+    const messages = [];
+    for (const message of stored.messages) {
+      if (!isPlainObject(message)) {
+        continue;
+      }
+      if (message.role === 'user' && typeof message.text === 'string') {
+        messages.push({ role: 'user', text: message.text });
+      } else if (message.role === 'assistant' && isPlainObject(message.response) && typeof message.response.kind === 'string') {
+        messages.push({ role: 'assistant', response: message.response, answered: true });
+      }
+    }
+    const kept = budget > 0 ? messages.slice(-budget) : [];
+    if (kept.length > 0) {
+      budget -= kept.length;
+      seen.add(stored.id);
+      conversations.push({ id: stored.id, messages: kept });
+    }
+  }
+  return conversations.length > 0 ? { conversations, activeId: data.active } : null;
+}
+
+const renderApi = { fill, formatElapsed, formatDate, formatTime, describeTool, describeResponse, responseFromHttp, packConversations, unpackConversations };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = renderApi;

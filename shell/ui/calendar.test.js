@@ -454,6 +454,11 @@ test('calendar.html has a back link to the assistant in its header', () => {
   assert.ok(locale('en').has('assistant-title') && locale('ar').has('assistant-title'));
 });
 
+test('the back link is drawn like the header buttons, without the underline and link colour', () => {
+  const css = read('calendar.css');
+  assert.match(css, /a\.button\s*\{[^}]*color:\s*inherit;[^}]*text-decoration:\s*none/);
+});
+
 test('every id calendar.js looks up exists in calendar.html', () => {
   const wanted = [...read('calendar.js').matchAll(/(?:byId|getElementById)\('([^']+)'\)/g)].map((m) => m[1]);
   assert.ok(wanted.length >= 10);

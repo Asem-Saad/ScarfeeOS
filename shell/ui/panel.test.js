@@ -43,7 +43,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 // Loads the scripts exactly as index.html lists them, as classic scripts in one global scope (no require,
 // no module), against a fake DOM that only answers for ids that index.html really has.
-async function loadPanel(chat, storage) {
+async function loadPanel(chat, storage, session) {
   const html = read('index.html');
   const known = new Set([...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
   const ids = {};
@@ -77,6 +77,11 @@ async function loadPanel(chat, storage) {
     Object.defineProperty(sandbox, 'localStorage', { get() { throw new Error('SecurityError'); } });
   } else if (storage !== undefined) {
     sandbox.localStorage = storage;
+  }
+  if (session === 'throws') {
+    Object.defineProperty(sandbox, 'sessionStorage', { get() { throw new Error('SecurityError'); } });
+  } else if (session !== undefined) {
+    sandbox.sessionStorage = session;
   }
   const context = vm.createContext(sandbox);
   const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map((m) => m[1]);
@@ -467,6 +472,146 @@ test('buttons are off while a message is being answered, and a held call without
   const none = await loadPanel(sequence({ kind: 'needs_confirmation', tool: 'set_language', arguments: { lang: 'ar' } }));
   await ask(none.ids);
   assert.strictEqual(buttons(none.ids).length, 0);
+});
+
+const SESSION_KEY = 'scarfeeos.panel.conversations';
+
+test('the conversation comes back after a reload, with the same text and direction, and is saved as the user goes', async () => {
+  const session = memoryStorage();
+  const first = await loadPanel(sequence(
+    { kind: 'reply', text: '<b>hi</b> <img src=x onerror=alert(1)>' },
+    { kind: 'time', date: '2026-10-30', hour: 9, minute: 5, weekday: 'Friday' },
+  ), undefined, session);
+  await ask(first.ids, '<i>مرحبا</i> see /tmp/a.txt');
+  await ask(first.ids, 'time?');
+  const before = shown(first.ids);
+  assert.ok(session.data.has(SESSION_KEY));
+
+  const second = await loadPanel(async () => assert.fail('a restore sends nothing'), undefined, session);
+  assert.strictEqual(shown(second.ids), before);
+  const roles = (ids) => ids['message-list'].children.map((li) => li.className);
+  assert.deepStrictEqual(roles(second.ids), roles(first.ids));
+  assert.deepStrictEqual(roles(second.ids), ['message message-user', 'message message-assistant', 'message message-user', 'message message-assistant']);
+  assert.strictEqual(second.posts.length, 0);
+  const tags = new Set(second.ids['message-list'].all(() => true).map((n) => n.tagName));
+  assert.deepStrictEqual([...tags].filter((tag) => !['message-list', 'li', 'div', 'span', 'p', 'bdi', '#text'].includes(tag)), [], 'stored text is only ever a text node');
+  assert.strictEqual(second.ids['conversation-list'].children.length, 1);
+  assert.strictEqual(second.sendButton.disabled, false);
+});
+
+test('a restored conversation is drawn again with the current settings and language', async () => {
+  const session = memoryStorage();
+  const first = await loadPanel(async () => TIME_ANSWER, undefined, session);
+  await ask(first.ids, 'time?');
+  const second = await loadPanel(async () => TIME_ANSWER, undefined, session);
+  change(second.ids['setting-digits'], 'eastern');
+  assert.match(shown(second.ids), /٠٩:٠٥, on Thursday ٢٠٢٦-٠١-٠١\./);
+  change(second.ids.language, 'ar');
+  assert.match(shown(second.ids), /time\?/);
+});
+
+test('a Confirm or Cancel that was waiting is not clickable after a reload', async () => {
+  const session = memoryStorage();
+  const first = await loadPanel(sequence(
+    { kind: 'needs_confirmation', tool: 'set_language', arguments: { lang: 'ar' }, action_id: ID },
+    { kind: 'needs_clarification', tool: 'schedule_meeting', arguments: { title: 'x', time: '2026-11-01T14:00' }, action_id: ID },
+  ), undefined, session);
+  await ask(first.ids, 'one');
+  await ask(first.ids, 'two');
+  assert.ok(buttons(first.ids).some((b) => !b.disabled), 'live before the reload');
+
+  const second = await loadPanel(async () => assert.fail('nothing may be sent'), undefined, session);
+  assert.strictEqual(buttons(second.ids).length, 4, 'the question is still shown');
+  assert.ok(buttons(second.ids).every((b) => b.disabled));
+  assert.ok(second.ids['message-list'].all((n) => n.tagName === 'input').every((n) => n.disabled));
+  assert.match(shown(second.ids), /Do you want to go ahead/);
+  for (const b of buttons(second.ids)) {
+    if (b.listeners.click) await click(b);
+  }
+  assert.strictEqual(second.posts.length, 0);
+
+  const third = await loadPanel(async () => assert.fail('nothing may be sent'), undefined, session);
+  assert.ok(buttons(third.ids).every((b) => b.disabled), 'still off after a second reload');
+});
+
+test('a reply still waiting is not stored, and a restored conversation can go on', async () => {
+  const session = memoryStorage();
+  let finish;
+  const first = await loadPanel(() => new Promise((resolve) => { finish = resolve; }), undefined, session);
+  await ask(first.ids, 'slow question');
+  const stored = JSON.parse(session.data.get(SESSION_KEY));
+  assert.deepStrictEqual(stored.conversations[0].messages, [{ role: 'user', text: 'slow question' }]);
+
+  const second = await loadPanel(sequence({ kind: 'declined' }), undefined, session);
+  assert.match(shown(second.ids), /slow question/);
+  assert.doesNotMatch(shown(second.ids), /Working on it/);
+  await ask(second.ids, 'again');
+  assert.deepStrictEqual(second.posts, [{ text: 'again', language: 'en' }]);
+  const third = await loadPanel(async () => TIME_ANSWER, undefined, session);
+  assert.match(shown(third.ids), /slow question[^]*again[^]*does not answer religious questions/);
+  finish(reply({ kind: 'declined' }));
+  await tick();
+  await tick();
+});
+
+test('conversations come back with their order, the active one, and new ones get new ids', async () => {
+  const session = memoryStorage();
+  const first = await loadPanel(sequence({ kind: 'declined' }, { kind: 'declined' }), undefined, session);
+  await ask(first.ids, 'first topic');
+  first.ids['new-conversation'].listeners.click();
+  await ask(first.ids, 'second topic');
+  first.ids['conversation-list'].children[1].children[0].listeners.click();
+
+  const second = await loadPanel(async () => assert.fail('nothing is sent'), undefined, session);
+  const titles = second.ids['conversation-list'].children.map((li) => li.children[0].textContent);
+  assert.deepStrictEqual(titles, ['second topic', 'first topic']);
+  assert.match(shown(second.ids), /first topic/);
+  assert.doesNotMatch(shown(second.ids), /second topic/);
+  second.ids['new-conversation'].listeners.click();
+  const ids = JSON.parse(session.data.get(SESSION_KEY)).conversations.map((c) => c.id);
+  assert.strictEqual(new Set(ids).size, ids.length);
+  second.ids['conversation-list'].children[0].children[0].listeners.click();
+  assert.strictEqual(second.ids['conversation-list'].children.length, 3);
+  const all = JSON.parse(session.data.get(SESSION_KEY)).conversations.map((c) => c.id);
+  assert.strictEqual(new Set(all).size, all.length);
+});
+
+test('storage that is damaged, edited, missing, blocked or full leaves a working panel', async () => {
+  for (const bad of ['', 'not json', 'null', '[]', '{"version":2}', '{"version":1,"conversations":5}',
+    JSON.stringify({ version: 1, active: 1, conversations: [{ id: 'x', messages: [{ role: 'user', text: 'a' }] }, { id: 1, messages: [{ role: 'user', text: 5 }, { role: 'assistant', response: 'str' }, null] }] })]) {
+    const { ids } = await loadPanel(sequence({ kind: 'declined' }), undefined, memoryStorage({ [SESSION_KEY]: bad }));
+    assert.match(shown(ids), /How can I help you\?/, JSON.stringify(bad));
+    await ask(ids, 'works');
+    assert.match(shown(ids), /does not answer religious/);
+  }
+  for (const session of ['throws', undefined]) {
+    const { ids } = await loadPanel(sequence({ kind: 'declined' }), undefined, session);
+    await ask(ids, 'works');
+    assert.match(shown(ids), /does not answer religious/);
+  }
+  const throwing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('QuotaExceededError'); } };
+  const { ids } = await loadPanel(sequence({ kind: 'declined' }), undefined, throwing);
+  await ask(ids, 'works');
+  assert.match(shown(ids), /does not answer religious/);
+
+  const full = memoryStorage({ [SESSION_KEY]: JSON.stringify({ version: 1, active: 1, conversations: [{ id: 1, messages: [{ role: 'user', text: 'old' }] }] }) });
+  full.setItem = () => { throw new Error('QuotaExceededError'); };
+  full.removeItem = (k) => full.data.delete(k);
+  const afterFull = await loadPanel(sequence({ kind: 'declined' }), undefined, full);
+  await ask(afterFull.ids, 'new');
+  assert.ok(!full.data.has(SESSION_KEY), 'a save that fails does not leave the older conversation behind');
+});
+
+test('only the newest messages are stored', async () => {
+  const session = memoryStorage();
+  const { ids } = await loadPanel(async () => reply({ kind: 'declined' }), undefined, session);
+  for (let i = 0; i < 110; i += 1) {
+    await ask(ids, `question ${i}`);
+  }
+  const stored = JSON.parse(session.data.get(SESSION_KEY)).conversations[0].messages;
+  assert.strictEqual(stored.length, 200);
+  assert.strictEqual(stored[stored.length - 2].text, 'question 109');
+  assert.strictEqual(stored[0].text, 'question 10');
 });
 
 test('index.html links to the meetings and reminders screen with the calendar-title text', () => {
