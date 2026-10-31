@@ -178,3 +178,5 @@ installer-tier-warning = { $tier } needs more than this computer has. You can st
 installer-disk-title = Disk and account setup
 installer-not-built = Not built yet
 installer-disk-placeholder = This step is not built yet. The installer does not change any disk and does not create any account. Your choices have not been saved.
+installer-choose-language = Choose a language to continue.
+installer-choose-tier = Choose a tier to continue.

@@ -44,7 +44,8 @@ const NO_GPU_RESPONSE = {
 
 // A very small DOM: enough for installer.js, and it refuses anything that would parse text as markup.
 class FakeNode {
-  constructor(tag) {
+  constructor(tag, doc) {
+    this.doc = doc;
     this.tagName = tag;
     this.children = [];
     this.attributes = {};
@@ -61,28 +62,57 @@ class FakeNode {
   set innerHTML(value) { throw new Error(`innerHTML is not allowed: ${value}`); }
   set outerHTML(value) { throw new Error(`outerHTML is not allowed: ${value}`); }
   append(...nodes) { this.children.push(...nodes); }
-  replaceChildren(...nodes) { this.ownText = ''; this.children = nodes; }
+  replaceChildren(...nodes) {
+    // A focused control that is removed loses focus, as in a browser.
+    if (this.doc.activeElement && this.all().includes(this.doc.activeElement)) this.doc.activeElement = null;
+    this.ownText = '';
+    this.children = nodes;
+  }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   getAttribute(name) { return this.attributes[name] ?? null; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
-  fire(type) { for (const fn of this.listeners[type] || []) fn({ type }); }
-  focus() { this.focused = true; }
+  fire(type, extra = {}) { for (const fn of this.listeners[type] || []) fn({ type, ...extra }); }
+  focus() { this.focused = true; this.doc.activeElement = this; }
+  contains(node) { return this.all().includes(node); }
   all() { return [this, ...this.children.flatMap((c) => c.all())]; }
   find(predicate) { return this.all().filter(predicate); }
   byClass(name) { return this.find((n) => n.className.split(/\s+/).includes(name)); }
   byTag(name) { return this.find((n) => n.tagName === name); }
 
-  // Only `input[name="x"]:checked`, the one selector installer.js uses.
+  // Only the selectors installer.js uses: `h1` and `[data-focus="key"]`.
   querySelector(selector) {
-    const [, name] = /^input\[name="([a-z]+)"\]:checked$/.exec(selector) || [];
-    assert.ok(name, `unsupported selector ${selector}`);
-    return this.find((n) => n.tagName === 'input' && n.name === name && n.checked)[0] || null;
+    if (selector === 'h1') return this.byTag('h1')[0] || null;
+    const [, key] = /^\[data-focus="([a-z-]+)"\]$/.exec(selector) || [];
+    assert.ok(key, `unsupported selector ${selector}`);
+    return this.find((n) => n.getAttribute('data-focus') === key)[0] || null;
   }
 }
 
-function setup(response) {
-  const document = { title: '', createElement: (tag) => new FakeNode(tag) };
-  const container = new FakeNode('main');
+// The part of window.history that installer.js uses: a list of entries, an index, and a popstate on back and forward.
+function fakeHistory() {
+  const entries = [{ installerStep: 'language' }];
+  const h = {
+    index: 0,
+    entries,
+    onPop: null,
+    get state() { return entries[h.index]; },
+    pushState(state) { entries.splice(h.index + 1, entries.length, state); h.index += 1; },
+    replaceState(state) { entries[h.index] = state; },
+    back() { h.go(-1); },
+    go(delta) {
+      const to = h.index + delta;
+      if (to < 0 || to >= entries.length) return;
+      h.index = to;
+      h.onPop({ state: entries[to] });
+    },
+  };
+  return h;
+}
+
+function setup(response, { withHistory = true } = {}) {
+  const document = { title: '', activeElement: null, createElement: (tag) => new FakeNode(tag, document) };
+  const container = new FakeNode('main', document);
+  const history = fakeHistory();
   const root = { lang: '', dir: '' };
   const catalogs = { en: locale('en'), ar: locale('ar') };
   const i18n = createI18n(catalogs, root, 'en');
@@ -93,6 +123,7 @@ function setup(response) {
     container,
     i18n,
     catalogs,
+    history: withHistory ? history : null,
     ask(body) {
       asked.push(body);
       return Promise.resolve(typeof response === 'function' ? response(body) : response);
@@ -102,12 +133,13 @@ function setup(response) {
       return Installer.saveChoicesToJsonFile(choices);
     },
   });
+  history.onPop = installer.popState;
   installer.render();
   const radio = (name, value) => container.byTag('input').find((n) => n.name === name && n.value === value);
   const buttons = () => container.byTag('button');
   const forward = () => container.byClass('nav-forward')[0];
   const flush = () => new Promise((resolve) => setImmediate(resolve));
-  return { installer, container, root, document, asked, saved, radio, buttons, forward, flush, catalogs };
+  return { installer, container, root, document, history, asked, saved, radio, buttons, forward, flush, catalogs };
 }
 
 async function toTierScreen(response, language = 'en') {
@@ -131,7 +163,7 @@ test('screen 1 is bilingual and Continue cannot proceed before a choice', () => 
   assert.deepStrictEqual(container.byClass('choice-name').map((n) => n.textContent), ['English', 'العربية']);
   assert.deepStrictEqual(container.byClass('choice-name').map((n) => n.dir), ['ltr', 'rtl']);
   assert.strictEqual(forward().textContent, 'Continue / متابعة');
-  assert.strictEqual(forward().disabled, true);
+  assert.strictEqual(forward().getAttribute('aria-disabled'), 'true');
   assert.strictEqual(installer.next(), false);
   assert.strictEqual(installer.state.step, 'language');
   assert.deepStrictEqual(asked, []);
@@ -140,12 +172,13 @@ test('screen 1 is bilingual and Continue cannot proceed before a choice', () => 
 
 test('choosing a language switches the whole page to it, RTL for Arabic', () => {
   const { container, document, forward, radio, root } = setup(REAL_RESPONSE);
+  radio('language', 'ar').focus();
   radio('language', 'ar').fire('change');
   assert.strictEqual(root.lang, 'ar');
   assert.strictEqual(root.dir, 'rtl');
   assert.strictEqual(document.title, 'اختر لغتك');
   assert.strictEqual(forward().textContent, 'متابعة');
-  assert.strictEqual(forward().disabled, false);
+  assert.strictEqual(forward().getAttribute('aria-disabled'), null);
   assert.strictEqual(radio('language', 'ar').checked, true);
   assert.strictEqual(radio('language', 'en').checked, false);
   assert.strictEqual(radio('language', 'ar').focused, true);
@@ -187,7 +220,7 @@ test('screen 2 asks the core for the hardware and highlights the recommended tie
   assert.match(isolates(container.byClass('tier')[2].textContent), /Models: Qwen3-4B, Jais-3-3.7B/);
   assert.match(isolates(recommended[0].textContent), /Models: Qwen3-8B$/);
   assert.strictEqual(container.byClass('notice-warning').length, 0);
-  assert.strictEqual(forward().disabled, false);
+  assert.strictEqual(forward().getAttribute('aria-disabled'), null);
 });
 
 test('choosing a tier above the hardware warns but does not block', async () => {
@@ -197,7 +230,7 @@ test('choosing a tier above the hardware warns but does not block', async () => 
   assert.strictEqual(warning.length, 1);
   assert.strictEqual(isolates(warning[0].textContent), 'Dual needs more than this computer has. You can still choose it, but the assistant may run slowly or fail to load its models.');
   assert.strictEqual(warning[0].getAttribute('role'), 'alert');
-  assert.strictEqual(forward().disabled, false);
+  assert.strictEqual(forward().getAttribute('aria-disabled'), null);
   assert.strictEqual(installer.next(), true);
   assert.strictEqual(installer.state.step, 'disk');
   assert.deepStrictEqual(installer.state.saveResult.saved, false);
@@ -239,11 +272,11 @@ test('when the hardware cannot be read every tier can still be chosen', async ()
     assert.match(container.textContent, /could not be checked/);
     assert.strictEqual(container.byClass('tier-recommended').length, 0);
     assert.strictEqual(container.byClass('badge').length, 0);
-    assert.strictEqual(forward().disabled, true);
+    assert.strictEqual(forward().getAttribute('aria-disabled'), 'true');
     radio('tier', 'dual').fire('change');
     assert.strictEqual(container.byClass('notice-warning').length, 1);
     assert.match(container.byClass('notice-warning')[0].textContent, /could not be checked/);
-    assert.strictEqual(forward().disabled, false);
+    assert.strictEqual(forward().getAttribute('aria-disabled'), null);
     buttons().find((b) => b.textContent === 'Check again').fire('click');
     await flush();
     assert.strictEqual(asked.length, 2);
@@ -255,9 +288,11 @@ test('a late answer for an older request is ignored and the user\'s tier is kept
   const page = setup(() => new Promise((resolve) => answers.push(resolve)));
   page.radio('language', 'en').fire('change');
   page.forward().fire('click');
+  await page.flush();
   assert.match(page.container.textContent, /Checking this computer/);
   page.radio('tier', 'lite').fire('change');
   page.installer.loadHardware();
+  await page.flush();
   answers[0](REAL_RESPONSE);
   await page.flush();
   assert.match(page.container.textContent, /Checking this computer/);
@@ -353,7 +388,7 @@ test('placeholders in the installer strings are the same in English and Arabic',
 });
 
 test('installer.js has no hard-coded text except the prompt and the two language names', () => {
-  const allowed = new Set([Installer.LANGUAGE_PROMPT, 'English', 'العربية', 'use strict']);
+  const allowed = new Set([Installer.LANGUAGE_PROMPT, 'English', 'العربية', 'use strict', 'Enter']);
   for (const literal of stringLiterals(source)) {
     if (allowed.has(literal) || !/\p{L}/u.test(literal)) continue;
     assert.doesNotMatch(literal, /[^\x00-\x7f]/, `non-ASCII text: ${literal}`);
@@ -372,6 +407,309 @@ test('index.html has no hard-coded text or plain text attributes', () => {
   assert.strictEqual(page.replace(/<[^>]*>/g, '').trim(), '');
   assert.doesNotMatch(page, /\s(placeholder|title|alt|aria-label)=/);
   assert.match(html, /<html lang="en" dir="ltr">/);
+});
+
+// Navigation, focus and refusal
+
+const choices = (page) => page.container.byTag('input').filter((n) => n.checked).map((n) => `${n.name}=${n.value}`);
+
+test('Back keeps the choices, forward again does not ask the hardware a second time', async () => {
+  const page = await toTierScreen(REAL_RESPONSE, 'ar');
+  page.radio('tier', 'dual').fire('change');
+  page.buttons().find((b) => b.textContent === 'رجوع').fire('click');
+  assert.strictEqual(page.installer.state.step, 'language');
+  assert.deepStrictEqual(choices(page), ['language=ar']);
+  assert.strictEqual(page.root.dir, 'rtl');
+  page.forward().fire('click');
+  await page.flush();
+  assert.deepStrictEqual(choices(page), ['tier=dual']);
+  assert.deepStrictEqual(page.asked, [{ hardware: true }]);
+  page.forward().fire('click');
+  assert.strictEqual(page.installer.state.step, 'disk');
+  page.buttons()[0].fire('click');
+  assert.strictEqual(page.installer.state.step, 'tier');
+  assert.deepStrictEqual(choices(page), ['tier=dual']);
+});
+
+test('changing the language after going back switches the whole page and keeps the tier', async () => {
+  const page = await toTierScreen(REAL_RESPONSE, 'en');
+  page.radio('tier', 'lite').fire('change');
+  page.buttons().find((b) => b.textContent === 'Back').fire('click');
+  page.radio('language', 'ar').fire('change');
+  assert.strictEqual(page.root.dir, 'rtl');
+  page.forward().fire('click');
+  await page.flush();
+  assert.strictEqual(page.container.byTag('h1')[0].textContent, 'اختر مستوى الذكاء الاصطناعي');
+  assert.deepStrictEqual(choices(page), ['tier=lite']);
+});
+
+test('a failed hardware check is tried again when the screen is shown again', async () => {
+  const page = await toTierScreen({ kind: 'unreachable' });
+  page.buttons().find((b) => b.textContent === 'Back').fire('click');
+  page.forward().fire('click');
+  await page.flush();
+  assert.strictEqual(page.asked.length, 2);
+});
+
+test('a hardware request that throws or never resolves to a response ends as "could not be checked"', async () => {
+  const page = setup(() => { throw new Error('the shell is gone'); });
+  page.radio('language', 'en').fire('change');
+  page.forward().fire('click');
+  await page.flush();
+  assert.match(page.container.textContent, /could not be checked/);
+  assert.strictEqual(page.installer.state.hardware.phase, 'unavailable');
+});
+
+test('Continue refuses without a choice and says why, in both languages on screen 1', async () => {
+  const page = setup(REAL_RESPONSE);
+  page.forward().fire('click');
+  assert.strictEqual(page.installer.state.step, 'language');
+  const alert = page.container.byClass('notice-warning');
+  assert.strictEqual(alert.length, 1);
+  assert.strictEqual(alert[0].getAttribute('role'), 'alert');
+  assert.strictEqual(alert[0].textContent, 'Choose a language to continue. / اختر لغة للمتابعة.');
+  assert.deepStrictEqual(page.asked, []);
+  page.radio('language', 'en').fire('change');
+  assert.strictEqual(page.container.byClass('notice-warning').length, 0);
+  assert.strictEqual(page.history.entries.length, 1);
+});
+
+test('Continue on the tier screen refuses until a tier is chosen, and says why', async () => {
+  const page = await toTierScreen({ kind: 'unreachable' }, 'ar');
+  page.forward().fire('click');
+  assert.strictEqual(page.installer.state.step, 'tier');
+  assert.deepStrictEqual(page.container.byClass('notice-warning').map((n) => n.textContent).filter((t) => /مستوى للمتابعة/.test(t)), ['اختر مستوى للمتابعة.']);
+  assert.deepStrictEqual(page.saved, []);
+  page.radio('tier', 'lite').fire('change');
+  assert.ok(!page.container.textContent.includes('للمتابعة.'));
+  page.forward().fire('click');
+  assert.strictEqual(page.installer.state.step, 'disk');
+});
+
+test('a tier that is not one of the three is refused, and nothing is saved for it', async () => {
+  const page = await toTierScreen({ kind: 'unreachable' });
+  assert.strictEqual(page.installer.chooseTier('huge'), false);
+  assert.strictEqual(page.installer.next(), false);
+  assert.deepStrictEqual(page.saved, []);
+});
+
+test('Enter on a radio continues, or refuses with the reason', async () => {
+  const page = setup(REAL_RESPONSE);
+  page.radio('language', 'en').fire('keydown', { key: 'Enter' });
+  assert.strictEqual(page.installer.state.step, 'language');
+  assert.strictEqual(page.container.byClass('notice-warning').length, 1);
+  page.radio('language', 'ar').fire('keydown', { key: 'ArrowDown' });
+  assert.strictEqual(page.installer.state.step, 'language');
+  page.radio('language', 'ar').fire('change');
+  page.radio('language', 'ar').fire('keydown', { key: 'Enter' });
+  await page.flush();
+  assert.strictEqual(page.installer.state.step, 'tier');
+  page.radio('tier', 'full').fire('keydown', { key: 'Enter' });
+  assert.strictEqual(page.installer.state.step, 'disk');
+});
+
+test('focus moves to the heading on every new screen and stays on the control that had it', async () => {
+  const page = setup(REAL_RESPONSE);
+  page.radio('language', 'ar').focus();
+  page.radio('language', 'ar').fire('change');
+  assert.strictEqual(page.document.activeElement, page.radio('language', 'ar'));
+  page.forward().focus();
+  page.forward().fire('click');
+  assert.strictEqual(page.document.activeElement, page.container.byTag('h1')[0]);
+  assert.strictEqual(page.container.byTag('h1')[0].getAttribute('tabindex'), '-1');
+  page.radio('tier', 'lite').focus();
+  await page.flush();
+  assert.strictEqual(page.document.activeElement, page.radio('tier', 'lite'), 'the hardware answer must not take focus away');
+  page.radio('tier', 'dual').focus();
+  page.radio('tier', 'dual').fire('change');
+  assert.strictEqual(page.document.activeElement, page.radio('tier', 'dual'));
+  page.forward().focus();
+  page.forward().fire('click');
+  assert.strictEqual(page.document.activeElement, page.container.byTag('h1')[0]);
+  page.buttons()[0].focus();
+  page.buttons()[0].fire('click');
+  assert.strictEqual(page.document.activeElement, page.container.byTag('h1')[0]);
+});
+
+test('Check again keeps focus on its button, and the refusal message keeps it on Continue', async () => {
+  const page = await toTierScreen({ kind: 'unreachable' });
+  const retry = () => page.buttons().find((b) => b.textContent === 'Check again');
+  retry().focus();
+  retry().fire('click');
+  assert.strictEqual(retry(), undefined, 'there is nothing to press while checking');
+  await page.flush();
+  assert.strictEqual(page.document.activeElement, retry());
+  page.forward().focus();
+  page.forward().fire('click');
+  assert.strictEqual(page.document.activeElement, page.forward());
+});
+
+test('the browser history follows the screens: Back leaves tier for language, and Forward returns', async () => {
+  const page = await toTierScreen(REAL_RESPONSE);
+  page.radio('tier', 'dual').fire('change');
+  assert.deepStrictEqual(page.history.entries.map((e) => e.installerStep), ['language', 'tier']);
+  page.history.go(-1);
+  assert.strictEqual(page.installer.state.step, 'language');
+  assert.deepStrictEqual(choices(page), ['language=en']);
+  page.history.go(1);
+  await page.flush();
+  assert.strictEqual(page.installer.state.step, 'tier');
+  assert.deepStrictEqual(choices(page), ['tier=dual']);
+  page.forward().fire('click');
+  assert.deepStrictEqual(page.history.entries.map((e) => e.installerStep), ['language', 'tier', 'disk']);
+  page.history.go(-2);
+  assert.strictEqual(page.installer.state.step, 'language');
+});
+
+test('the Back button goes through the browser history, so Back and Forward stay in step', async () => {
+  const page = await toTierScreen(REAL_RESPONSE);
+  page.buttons().find((b) => b.textContent === 'Back').fire('click');
+  assert.strictEqual(page.history.index, 0);
+  assert.strictEqual(page.installer.state.step, 'language');
+  page.history.go(1);
+  assert.strictEqual(page.installer.state.step, 'tier');
+});
+
+test('without browser history the Back button still works', async () => {
+  const page = setup(REAL_RESPONSE, { withHistory: false });
+  page.radio('language', 'en').fire('change');
+  page.forward().fire('click');
+  await page.flush();
+  assert.strictEqual(page.installer.back(), true);
+  assert.strictEqual(page.installer.state.step, 'language');
+  assert.strictEqual(page.installer.back(), false);
+});
+
+test('a history entry for a screen whose choices were not made is not shown', async () => {
+  const page = setup(REAL_RESPONSE);
+  page.installer.popState({ state: { installerStep: 'disk' } });
+  assert.strictEqual(page.installer.state.step, 'language');
+  page.installer.popState({ state: { installerStep: 'tier' } });
+  assert.strictEqual(page.installer.state.step, 'language');
+  page.installer.popState({ state: null });
+  assert.strictEqual(page.installer.state.step, 'language');
+  assert.deepStrictEqual(page.history.entries, [{ installerStep: 'language' }]);
+  assert.deepStrictEqual(page.asked, []);
+  page.radio('language', 'en').fire('change');
+  page.installer.popState({ state: { installerStep: 'disk' } });
+  await page.flush();
+  assert.strictEqual(page.installer.state.step, 'tier');
+  assert.deepStrictEqual(page.history.entries.map((e) => e.installerStep), ['tier']);
+  assert.deepStrictEqual(page.saved, []);
+});
+
+// Right to left
+
+test('lists and notes follow the page direction: nothing is laid out by guessing from its first letter', async () => {
+  const page = await toTierScreen(REAL_RESPONSE, 'ar');
+  assert.ok(page.container.byTag('li').length >= 4);
+  for (const node of page.container.all()) assert.ok(!node.dir || node.className === 'choice-name', `${node.tagName} has dir=${node.dir}`);
+  assert.doesNotMatch(source, /dir\s*=\s*'auto'|setAttribute\('dir'/);
+});
+
+test('Latin names and numbers inside Arabic text are isolated, so they cannot reorder the words around them', async () => {
+  const page = await toTierScreen(REAL_RESPONSE, 'ar');
+  const gpu = page.container.byTag('li').map((n) => n.textContent).find((t) => /RTX/.test(t));
+  assert.match(gpu, /⁨NVIDIA GeForce RTX 3050 6GB Laptop GPU⁩/);
+  assert.match(gpu, /⁨⁨6⁩ غيغابايت⁩/);
+  assert.match(page.container.byClass('tier-models')[2].textContent, /⁨Qwen3-4B، Jais-3-3\.7B⁩/);
+});
+
+// The installer cannot act on a disk
+
+const FORBIDDEN_APIS = /writeFile|localStorage|sessionStorage|indexedDB|XMLHttpRequest|WebSocket|EventSource|sendBeacon|showSaveFilePicker|showDirectoryPicker|createObjectURL|navigator\.|require\(['"]node:(fs|child_process)|\beval\(|new Function|\.download\b|location\s*=|location\.(href|assign|replace)/;
+
+test('every screen, in both languages, with Back and Forward, asks only for the hardware and saves nothing', async () => {
+  for (const language of ['en', 'ar']) {
+    const page = await toTierScreen(REAL_RESPONSE, language);
+    page.radio('tier', 'dual').fire('change');
+    page.forward().fire('click');
+    page.history.go(-1);
+    page.history.go(1);
+    page.installer.back();
+    page.installer.loadHardware();
+    await page.flush();
+    page.forward().fire('click');
+    assert.ok(page.asked.length >= 2);
+    for (const body of page.asked) assert.deepStrictEqual(body, { hardware: true });
+    assert.ok(page.saved.length >= 1);
+    for (const result of page.saved) assert.deepStrictEqual(result, { language, tier: 'dual' });
+    assert.strictEqual(page.installer.state.saveResult.saved, false);
+  }
+});
+
+test('isHardwareRequest accepts exactly {"hardware": true}', () => {
+  assert.strictEqual(Installer.isHardwareRequest({ hardware: true }), true);
+  for (const body of [{}, null, [], 'hardware', { hardware: 1 }, { hardware: true, install: true }, { hardware: true, disk: '/dev/sda' },
+    { confirm: 'x' }, { delete_event: 'x' }, { text: 'format the disk', language: 'en' }, { install: true }, { format: '/dev/sda' }]) {
+    assert.strictEqual(Installer.isHardwareRequest(body), false, JSON.stringify(body));
+  }
+});
+
+test('installer.js uses no API that could write a file, start a program or leave the page', () => {
+  assert.doesNotMatch(source, FORBIDDEN_APIS);
+  assert.doesNotMatch(read('index.html'), /<(form|iframe|object|embed|a)\b/);
+  assert.match('localStorage.setItem()', FORBIDDEN_APIS);
+  assert.match('new XMLHttpRequest()', FORBIDDEN_APIS);
+  assert.match('location.href = x', FORBIDDEN_APIS);
+});
+
+// The installer's real wiring (start()) in a stand-in browser: what it fetches, and what it does with a disk-like request.
+
+async function runInBrowserStandIn(response) {
+  const document = { title: '', activeElement: null, documentElement: { lang: '', dir: '' } };
+  document.createElement = (tag) => new FakeNode(tag, document);
+  const main = new FakeNode('main', document);
+  document.getElementById = (id) => (id === 'installer' ? main : null);
+  const fetched = [];
+  const history = fakeHistory();
+  const listeners = {};
+  const window = { history, addEventListener: (type, fn) => { listeners[type] = fn; } };
+  history.onPop = (event) => listeners.popstate(event);
+  const fetchStandIn = (url, init) => {
+    fetched.push({ url: String(url), init });
+    const body = String(url).startsWith('/chat')
+      ? JSON.stringify(response)
+      : fs.readFileSync(path.join(__dirname, String(url).replace(/^\.\.\/\.\.\//, '../../')), 'utf8');
+    return Promise.resolve({ status: 200, text: () => Promise.resolve(body) });
+  };
+  const context = vm.createContext({ console, document, window, fetch: fetchStandIn });
+  vm.runInContext(read('..', 'ui', 'i18n.js'), context);
+  vm.runInContext(source, context, { filename: 'installer.js' });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  await flush();
+  const radio = (name, value) => main.byTag('input').find((n) => n.name === name && n.value === value);
+  return { main, fetched, history, listeners, document, flush, radio, context };
+}
+
+test('the page fetches only the two locale files and /chat with {"hardware":true}, through a whole walk', async () => {
+  const page = await runInBrowserStandIn(REAL_RESPONSE);
+  assert.strictEqual(JSON.stringify(page.history.entries), '[{"installerStep":"language"}]');
+  assert.strictEqual(page.main.byTag('h1')[0].textContent, Installer.LANGUAGE_PROMPT);
+  page.radio('language', 'ar').fire('change');
+  page.main.byClass('nav-forward')[0].fire('click');
+  await page.flush();
+  page.radio('tier', 'lite').fire('change');
+  page.main.byClass('nav-forward')[0].fire('click');
+  assert.strictEqual(page.document.title, 'إعداد القرص والحساب');
+  page.listeners.popstate({ state: { installerStep: 'tier' } });
+  page.main.byClass('nav-forward')[0].fire('click');
+  assert.deepStrictEqual(page.fetched.map((f) => f.url).sort(), ['../../locales/ar/scarfeeos.ftl', '../../locales/en/scarfeeos.ftl', '/chat']);
+  const chat = page.fetched.find((f) => f.url === '/chat');
+  assert.strictEqual(chat.init.method, 'POST');
+  assert.strictEqual(chat.init.body, '{"hardware":true}');
+  for (const f of page.fetched) if (f.url !== '/chat') assert.strictEqual(f.init, undefined);
+});
+
+test('the page does not fetch /chat at all for a hardware request that is not exactly {"hardware":true}', async () => {
+  const page = await runInBrowserStandIn(REAL_RESPONSE);
+  const before = page.fetched.length;
+  // `ask` is private to start(); it is reachable only through the installer, which sends one fixed request.
+  page.radio('language', 'en').fire('change');
+  page.main.byClass('nav-forward')[0].fire('click');
+  await page.flush();
+  assert.strictEqual(page.fetched.length - before, 1);
+  assert.strictEqual(page.fetched.at(-1).init.body, '{"hardware":true}');
 });
 
 // CSS

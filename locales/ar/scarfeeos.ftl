@@ -178,3 +178,5 @@ installer-tier-warning = يحتاج المستوى { $tier } إلى أكثر م�
 installer-disk-title = إعداد القرص والحساب
 installer-not-built = لم يُنجَز بعد
 installer-disk-placeholder = هذه الخطوة لم تُنجَز بعد. لا يغيّر المثبّت أي قرص ولا ينشئ أي حساب. ولم تُحفظ اختياراتك.
+installer-choose-language = اختر لغة للمتابعة.
+installer-choose-tier = اختر مستوى للمتابعة.
