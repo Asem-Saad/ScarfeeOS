@@ -176,11 +176,24 @@ const COUNTED: &[&str] = &[
     "شهور", "اشهر", "سنه", "سنين", "سنوات", "مره", "مرات",
 ];
 
-/// The weekday named by `words[i]`, as 0 for Sunday to 6 for Saturday.
+/// Weekday spellings that are also numbers (two, three, four), so a unit after
+/// them can make them a count. الخميس and the other names never are.
+const NUMBER_FORMS: &[&str] = &["اثنين", "اتنين", "تنين", "ثنين", "ثلاثا", "تلات", "تلاتا", "اربع", "اربعا"];
+
+/// The same with ال, which only counts before a plural unit: "التلات ساعات" is
+/// the three hours, but "التلات ساعة 5" is Tuesday at 5.
+const DEFINITE_NUMBER_FORMS: &[&str] = &["الاتنين", "التنين", "الثنين", "التلات", "التلاتا", "الاربع", "الاربعا"];
+
+/// The weekday named by `words[i]`, as 0 for Sunday to 6 for Saturday. A
+/// number form before a unit is a count ("كل اربع ساعات", "بعد تلات ساعات"),
+/// unless يوم comes first: "يوم التلات ساعة 5" names a day.
 pub(crate) fn weekday_at(words: &[String], i: usize) -> Option<u32> {
     let word = words.get(i)?.as_str();
     let prev = i.checked_sub(1).map(|p| words[p].as_str());
-    let counted = words.get(i + 1).is_some_and(|n| COUNTED.contains(&n.as_str()));
+    let unit = words.get(i + 1).map(String::as_str).filter(|n| COUNTED.contains(n));
+    let counted = prev != Some("يوم")
+        && unit.is_some()
+        && (NUMBER_FORMS.contains(&word) || (DEFINITE_NUMBER_FORMS.contains(&word) && unit != Some("ساعه")));
     weekday_form(word, prev).filter(|_| !counted)
 }
 
@@ -525,6 +538,89 @@ mod tests {
         assert_eq!(resolve("كل اربع ساعات", TODAY), None);
         assert_eq!(resolve("كل تلات ايام", TODAY), None);
         assert_eq!(resolve("التلات ساعات", TODAY), None);
+    }
+
+    fn date_of(text: &str) -> String {
+        let d = resolve(text, TODAY).unwrap_or_else(|| panic!("{text}")).date;
+        format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)
+    }
+
+    #[test]
+    fn a_weekday_before_the_hour_keeps_its_date() {
+        // Today is Friday 30 October 2026.
+        for (day, date) in [
+            ("الاحد", "2026-11-01"),
+            ("الاثنين", "2026-11-02"),
+            ("الاتنين", "2026-11-02"),
+            ("التنين", "2026-11-02"),
+            ("الثلاثاء", "2026-11-03"),
+            ("التلات", "2026-11-03"),
+            ("التلاتا", "2026-11-03"),
+            ("الاربعاء", "2026-11-04"),
+            ("الاربعا", "2026-11-04"),
+            ("الاربع", "2026-11-04"),
+            ("الخميس", "2026-11-05"),
+            ("الجمعة", "2026-11-06"),
+            ("السبت", "2026-10-31"),
+            ("تلات", "2026-11-03"),
+            ("تلاتا", "2026-11-03"),
+            ("ثلاثا", "2026-11-03"),
+            ("اربع", "2026-11-04"),
+            ("اربعا", "2026-11-04"),
+            ("اربعاء", "2026-11-04"),
+            ("تنين", "2026-11-02"),
+            ("اتنين", "2026-11-02"),
+            ("اثنين", "2026-11-02"),
+            ("ثنين", "2026-11-02"),
+            ("خميس", "2026-11-05"),
+            ("جمعة", "2026-11-06"),
+            ("سبت", "2026-10-31"),
+            ("احد", "2026-11-01"),
+        ] {
+            for unit in ["ساعة", "ساعات", "ساعتين"] {
+                let text = format!("ذكرني يوم {day} {unit} 5");
+                assert_eq!(date_of(&text), date, "{text}");
+            }
+        }
+        let thursday = resolve("ذكرني يوم الخميس ساعة 5", TODAY).unwrap();
+        assert_eq!(thursday.date, Date::new(2026, 11, 5));
+        assert_eq!(thursday.repeat, None);
+        for (text, date) in [
+            ("remind me Thursday", "2026-11-05"),
+            ("الخميس ساعة 5", "2026-11-05"),
+            ("الخميس الساعة 5 العصر", "2026-11-05"),
+            ("التلات ساعة 5", "2026-11-03"),
+            ("الاربع ساعة 5", "2026-11-04"),
+            ("كل خميس ساعة 5", "2026-11-05"),
+            ("كل يوم تلات ساعة 5", "2026-11-03"),
+        ] {
+            assert_eq!(date_of(text), date, "{text}");
+        }
+        assert_eq!(resolve("كل خميس ساعة 5", TODAY).unwrap().repeat, Some(Repeat::Weekly));
+        assert_eq!(resolve("كل يوم تلات ساعة 5", TODAY).unwrap().repeat, Some(Repeat::Weekly));
+    }
+
+    #[test]
+    fn number_forms_before_a_unit_stay_counts() {
+        for text in [
+            "كل اربع ساعات",
+            "كل تلات ساعات",
+            "كل تلات ساعة",
+            "كل اتنين ساعتين",
+            "كل تنين دقايق",
+            "كل اربعا ايام",
+            "بعد تلات ساعات",
+            "بعد اربع ساعات",
+            "بعد تلاتا ساعات",
+            "ذكرني بعد اربع ساعات",
+            "التلات ساعات",
+            "الاربع ساعات",
+        ] {
+            assert_eq!(resolve(text, TODAY), None, "{text}");
+        }
+        // A count never sets the date or the repeat of a day named elsewhere.
+        let r = resolve("كل اربع ساعات يوم الخميس", TODAY).unwrap();
+        assert_eq!((r.repeat, r.date), (None, Date::new(2026, 11, 5)));
     }
 
     #[test]

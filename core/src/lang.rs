@@ -580,6 +580,58 @@ mod tests {
     }
 
     #[test]
+    fn a_weekday_before_the_hour_word_is_removed_as_a_day_and_counts_stay() {
+        for (text, expected) in [
+            ("اتصل بالبنك يوم الخميس ساعة 5", "اتصل بالبنك ساعة 5"),
+            ("اتصل بالبنك الخميس ساعة", "اتصل بالبنك ساعة"),
+            ("اتصل بالبنك يوم التلات ساعة", "اتصل بالبنك ساعة"),
+            ("اتصل بالبنك يوم تلات ساعة", "اتصل بالبنك ساعة"),
+            ("اتصل بالبنك يوم اربع ساعة", "اتصل بالبنك ساعة"),
+            ("اتصل بالبنك التلات ساعة", "اتصل بالبنك ساعة"),
+            ("اكل كل تلات ساعات", "اكل كل تلات ساعات"),
+            ("اكل بعد تلات ساعات", "اكل بعد تلات ساعات"),
+            ("اكل التلات ساعات", "اكل التلات ساعات"),
+            ("اكل كل اربع ساعة", "اكل كل اربع ساعة"),
+        ] {
+            assert_eq!(without_time_words(text, false), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_reminder_path_keeps_the_date_and_the_text_of_a_day_before_the_hour_word() {
+        use crate::datetime::{Date, Repeat};
+        use crate::tools::{resolve_call, Resolution, ToolCall};
+        let today = Date::new(2026, 10, 30);
+        let run = |user_text: &str| {
+            let proposed = ToolCall::CreateReminder { text: "x".into(), time: "x".into(), repeat: None };
+            match resolve_call(user_text, today, proposed) {
+                Resolution::Ready(ToolCall::CreateReminder { time, repeat, .. })
+                | Resolution::NeedsClarification(ToolCall::CreateReminder { time, repeat, .. }) => {
+                    Some((time, repeat, without_command_and_time(user_text)))
+                }
+                _ => None,
+            }
+        };
+        for (text, time, repeat, task) in [
+            ("ذكرني يوم الخميس ساعة 5", "2026-11-05", None, "ساعة 5"),
+            ("ذكرني اتصل بالبنك يوم الخميس ساعة", "2026-11-05", None, "اتصل بالبنك ساعة"),
+            ("ذكرني اتصل بالبنك يوم التلات ساعة", "2026-11-03", None, "اتصل بالبنك ساعة"),
+            ("ذكرني اتصل بالبنك يوم تلات ساعة", "2026-11-03", None, "اتصل بالبنك ساعة"),
+            ("ذكرني اتصل بالبنك يوم الاربع ساعتين", "2026-11-04", None, "اتصل بالبنك ساعتين"),
+            ("ذكرني اتصل بالبنك كل يوم تنين ساعة", "2026-11-02", Some(Repeat::Weekly), "اتصل بالبنك ساعة"),
+            ("ذكرني اتصل بالبنك السبت ساعه", "2026-10-31", None, "اتصل بالبنك ساعه"),
+        ] {
+            let (got_time, got_repeat, got_task) = run(text).unwrap_or_else(|| panic!("{text}"));
+            assert_eq!((got_time.as_str(), got_repeat, got_task.as_str()), (time, repeat, task), "{text}");
+        }
+        // Counts are not days: no date, so the caller asks, and the words stay.
+        for text in ["ذكرني اشرب مي كل اربع ساعات", "ذكرني اشرب مي بعد تلات ساعات"] {
+            assert!(run(text).is_none(), "{text}");
+        }
+        assert_eq!(without_command_and_time("ذكرني اشرب مي كل اربع ساعات"), "اشرب مي كل اربع ساعات");
+    }
+
+    #[test]
     fn prayer_names_stay_in_the_text() {
         assert_eq!(without_time_words("اتصل بالبنك بعد صلاة العصر", false), "اتصل بالبنك بعد صلاة العصر");
         assert_eq!(without_time_words("اتصل بالبنك بعد صلاة المغرب", false), "اتصل بالبنك بعد صلاة المغرب");
