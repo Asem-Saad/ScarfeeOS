@@ -60,6 +60,25 @@
     return { models: plan.writer === null ? [plan.command.name] : [plan.command.name, plan.writer.name] };
   }
 
+  const GPU_KEYS = Object.freeze({
+    discrete: Object.freeze({ line: 'installer-hardware-gpu-discrete', unusable: 'installer-hardware-gpu-unusable' }),
+    integrated: Object.freeze({ line: 'installer-hardware-gpu-integrated', unusable: 'installer-hardware-gpu-unusable-integrated' }),
+    unknown: Object.freeze({ line: 'installer-hardware-gpu-unknown', unusable: 'installer-hardware-gpu-unusable' }),
+  });
+
+  // The core's `gpus` list, or null when it is absent (an older core). Entries without a name are skipped.
+  function readGpus(gpus) {
+    if (!Array.isArray(gpus)) {
+      return null;
+    }
+    return gpus.filter((g) => isObject(g) && typeof g.name === 'string').map((g) => ({
+      name: g.name,
+      kind: Object.prototype.hasOwnProperty.call(GPU_KEYS, g.kind) ? g.kind : 'unknown',
+      memoryMib: isCount(g.memory_mib) ? g.memory_mib : null,
+      usable: g.llama_cpp_usable !== false,
+    }));
+  }
+
   // The core's `hardware` response (core/src/ipc.rs), or null when it is not one. The core's own `reason` text is
   // English and is not shown; the page words the basis itself from the numbers.
   function readHardware(response) {
@@ -87,6 +106,7 @@
       avx2: cpu.avx2 === true,
       avx512f: cpu.avx512f === true,
       gpu: gpu === null ? null : { name: gpu.name, memoryMib: gpu.memory_mib },
+      gpus: readGpus(response.gpus),
       recommended,
       plans: read,
     };
@@ -332,6 +352,15 @@
       return parts;
     }
 
+    function describeGpu(gpu) {
+      const keys = GPU_KEYS[gpu.kind];
+      let text = fill(t(keys.line), { name: gpu.name });
+      if (gpu.memoryMib !== null) {
+        text = fill(t('installer-hardware-gpu-with-memory'), { gpu: text, memory: size(gpu.memoryMib) });
+      }
+      return gpu.usable ? text : fill(t(keys.unusable), { gpu: text });
+    }
+
     function renderHardware() {
       const box = el('section', 'hardware');
       box.append(el('h2', 'section-title', t('installer-hardware-title')));
@@ -347,14 +376,19 @@
         const ram = data.ramKib === null
           ? t('installer-hardware-memory-unknown')
           : fill(t('installer-hardware-memory'), { size: size(data.ramKib / 1024) });
-        const gpu = data.gpu === null
-          ? t('installer-hardware-gpu-none')
-          : fill(t('installer-hardware-gpu'), { name: data.gpu.name, memory: size(data.gpu.memoryMib) });
+        let gpus;
+        if (data.gpus !== null) {
+          gpus = data.gpus.length === 0 ? [t('installer-hardware-gpu-none')] : data.gpus.map(describeGpu);
+        } else {
+          gpus = [data.gpu === null
+            ? t('installer-hardware-gpu-none')
+            : fill(t('installer-hardware-gpu'), { name: data.gpu.name, memory: size(data.gpu.memoryMib) })];
+        }
         const facts = [
           ram,
           fill(t('installer-hardware-avx2'), { answer: answer(data.avx2) }),
           fill(t('installer-hardware-avx512'), { answer: answer(data.avx512f) }),
-          gpu,
+          ...gpus,
         ];
         for (const fact of facts) {
           list.append(el('li', '', fact));

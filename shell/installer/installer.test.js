@@ -248,12 +248,74 @@ test('with no GPU the recommendation is Lite and the other tiers still can be ch
   const { container, radio } = await toTierScreen(NO_GPU_RESPONSE);
   assert.strictEqual(radio('tier', 'lite').checked, true);
   assert.match(isolates(container.textContent), /Memory \(RAM\): could not be read/);
-  assert.match(isolates(container.textContent), /Graphics card: no NVIDIA GPU detected/);
+  assert.match(isolates(container.textContent), /Graphics card: none found/);
   radio('tier', 'full').fire('change');
   assert.strictEqual(container.byClass('notice-warning').length, 1);
   radio('tier', 'dual').fire('change');
   assert.strictEqual(container.byClass('notice-warning').length, 1);
   assert.strictEqual(radio('tier', 'dual').checked, true);
+});
+
+// The core's `gpus` list: one discrete card, one integrated GPU and one GPU found but not usable for AI.
+const GPU_LIST = [
+  { vendor: 'nvidia', name: 'NVIDIA GeForce RTX 3060', kind: 'discrete', memory_mib: 12288, llama_cpp_usable: true },
+  { vendor: 'amd', name: 'AMD GPU 1002:1638', kind: 'integrated', memory_mib: null, llama_cpp_usable: true },
+  { vendor: 'intel', name: 'Intel GPU 8086:46A6', kind: 'unknown', memory_mib: null, llama_cpp_usable: false },
+];
+const lines = (page) => page.container.byTag('li').map((n) => isolates(n.textContent));
+
+test('every GPU the core found is listed with its kind and memory, and one that cannot be used for AI says so', async () => {
+  const page = await toTierScreen({ ...REAL_RESPONSE, gpus: GPU_LIST });
+  assert.deepStrictEqual(lines(page).slice(3), [
+    'Graphics card (dedicated): NVIDIA GeForce RTX 3060, 12 GB',
+    'Integrated graphics: AMD GPU 1002:1638',
+    'Graphics card (type unknown): Intel GPU 8086:46A6. Found, but it cannot be used for AI.',
+  ]);
+  assert.strictEqual(page.installer.state.step, 'tier');
+  assert.strictEqual(page.container.byClass('tier-recommended').length, 1, 'the recommendation is still the core\'s');
+});
+
+test('the GPU list is in Arabic after choosing Arabic, with the integrated GPU named as such and wrapped in isolates', async () => {
+  const unusable = { vendor: 'amd', name: 'AMD GPU 1002:1638', kind: 'integrated', memory_mib: null, llama_cpp_usable: false };
+  const page = await toTierScreen({ ...REAL_RESPONSE, gpus: [GPU_LIST[0], unusable, GPU_LIST[2]] }, 'ar');
+  assert.deepStrictEqual(lines(page).slice(3), [
+    'بطاقة الرسوميات المنفصلة: NVIDIA GeForce RTX 3060، 12 غيغابايت',
+    'معالج الرسوميات المدمج: AMD GPU 1002:1638. عُثر عليه، لكن لا يمكن استخدامه للذكاء الاصطناعي.',
+    'بطاقة الرسوميات (النوع غير معروف): Intel GPU 8086:46A6. عُثر عليها، لكن لا يمكن استخدامها للذكاء الاصطناعي.',
+  ]);
+  assert.match(page.container.byTag('li')[3].textContent, /⁨NVIDIA GeForce RTX 3060⁩/);
+});
+
+test('an empty GPU list says none was found, and a response without `gpus` keeps the single-GPU line', async () => {
+  const none = await toTierScreen({ ...NO_GPU_RESPONSE, gpus: [] });
+  assert.deepStrictEqual(lines(none).slice(3), ['Graphics card: none found']);
+  const old = await toTierScreen(REAL_RESPONSE);
+  assert.strictEqual(Installer.readHardware(REAL_RESPONSE).gpus, null);
+  assert.deepStrictEqual(lines(old).slice(3), ['Graphics card: NVIDIA GeForce RTX 3050 6GB Laptop GPU, 6 GB']);
+});
+
+test('readHardware reads `gpus` leniently: a bad entry is skipped and an unknown kind is shown as unknown', () => {
+  const read = Installer.readHardware({
+    ...REAL_RESPONSE,
+    gpus: [GPU_LIST[0], null, { name: 3 }, { name: 'X', kind: 'quantum', memory_mib: -1 }],
+  });
+  assert.deepStrictEqual(read.gpus, [
+    { name: 'NVIDIA GeForce RTX 3060', kind: 'discrete', memoryMib: 12288, usable: true },
+    { name: 'X', kind: 'unknown', memoryMib: null, usable: true },
+  ]);
+  assert.strictEqual(Installer.readHardware({ ...REAL_RESPONSE, gpus: 'many' }).gpus, null);
+});
+
+test('the graphics strings no longer name only NVIDIA, and Arabic says a graphics card except for integrated graphics', () => {
+  for (const lang of ['en', 'ar']) {
+    for (const [key, value] of locale(lang)) {
+      if (key.startsWith('installer-')) assert.doesNotMatch(value, /NVIDIA/, `${lang} ${key}`);
+    }
+  }
+  for (const [key, value] of locale('ar')) {
+    if (!key.startsWith('installer-')) continue;
+    assert.doesNotMatch(value.replace(/معالج الرسوميات المدمج/g, ''), /معالج رسوميات|معالج الرسوميات/, key);
+  }
 });
 
 test('screen 2 is in Arabic after choosing Arabic', async () => {
