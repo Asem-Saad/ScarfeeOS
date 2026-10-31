@@ -209,7 +209,7 @@ impl Executor {
                     actions::Outcome::Listing(l) => {
                         // A symlink to a hidden folder is only seen here, once it is resolved.
                         let inside = self.root.as_deref().and_then(|root| l.path.strip_prefix(root).ok());
-                        if inside.map_or(true, has_hidden_component) {
+                        if inside.is_none_or(has_hidden_component) {
                             return Err(hidden_path());
                         }
                         json!({
@@ -262,6 +262,7 @@ impl From<ActionError> for Failure {
             ActionError::File(FileError::NotFound(_)) => "not_found",
             ActionError::File(FileError::OutsideRoot) => "outside_root",
             ActionError::File(FileError::NotADirectory) => "not_a_directory",
+            ActionError::File(FileError::Hidden) => "hidden_path",
             ActionError::File(FileError::Unreadable(_)) => "unreadable",
             ActionError::File(FileError::EmptyQuery) => "empty_query",
             ActionError::Open(OpenError::EmptyName) => "empty_name",
@@ -712,6 +713,18 @@ mod tests {
             let r = env.executor.run(&ToolCall::SearchFiles { query: query.into() });
             assert_eq!(r["matches"].as_array().unwrap().len(), 0, "{query}: {r}");
         }
+    }
+
+    #[test]
+    fn arabic_folder_names_list_the_users_folder() {
+        let env = Env::new();
+        for path in ["المستندات", "في المستندات", "فولدر المستندات", "~/مستندات", "Documents"] {
+            let r = env.executor.run(&ToolCall::ListFiles { path: path.into() });
+            assert_eq!(display_names(&r), ["budget 2026.txt"], "{path}: {r}");
+        }
+        // Downloads is absent in this home: an honest not-found, not another folder.
+        let r = env.executor.run(&ToolCall::ListFiles { path: "داونلود".into() });
+        assert_eq!(error_code(&r), Some("not_found"), "{r}");
     }
 
     // A symlink is judged by where it leads: one into a hidden folder is refused

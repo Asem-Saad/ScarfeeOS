@@ -6,7 +6,7 @@ use std::collections::{HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::tools::ToolCall;
 
@@ -41,6 +41,8 @@ pub enum FileError {
     /// The path leads outside the root, by `..`, a symlink or an absolute path.
     OutsideRoot,
     NotADirectory,
+    /// The path goes through a hidden folder, directly or by a symlink.
+    Hidden,
     Unreadable(String),
     EmptyQuery,
 }
@@ -52,6 +54,7 @@ impl fmt::Display for FileError {
             FileError::NotFound(path) => write!(f, "not found: {path}"),
             FileError::OutsideRoot => write!(f, "path is outside the allowed folder"),
             FileError::NotADirectory => write!(f, "not a folder"),
+            FileError::Hidden => write!(f, "hidden folders are not listed"),
             FileError::Unreadable(why) => write!(f, "cannot read folder: {why}"),
             FileError::EmptyQuery => write!(f, "empty search"),
         }
@@ -74,17 +77,96 @@ impl Default for Limits {
     }
 }
 
-/// The user's Documents, Downloads and Desktop folders.
+/// The user's standard folders.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserDirs {
     pub documents: PathBuf,
     pub downloads: PathBuf,
     pub desktop: PathBuf,
+    pub pictures: PathBuf,
+    pub music: PathBuf,
+    pub videos: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StandardFolder {
+    Documents,
+    Downloads,
+    Desktop,
+    Pictures,
+    Music,
+    Videos,
+}
+
+// Names a user may give a standard folder, without the leading ال and
+// compared after `normalize`. Arabic ones come from the Arabic folder names
+// of desktop systems plus common colloquial and dialect words.
+const FOLDER_NAMES: &[(StandardFolder, &[&str])] = &[
+    (StandardFolder::Documents, &["documents", "docs", "مستندات", "وثائق", "دوكيمنتس", "دوكيومنتس"]),
+    (
+        StandardFolder::Downloads,
+        &["downloads", "تنزيلات", "تحميلات", "داونلود", "داونلودز", "داونلودات", "دونلود", "دانلود", "دونلودز"],
+    ),
+    (StandardFolder::Desktop, &["desktop", "سطح المكتب", "سطح مكتب", "ديسكتوب"]),
+    (StandardFolder::Pictures, &["pictures", "صور", "بكتشرز", "بيكتشرز"]),
+    (StandardFolder::Music, &["music", "موسيقى", "موسيقا", "اغاني", "ميوزك"]),
+    (StandardFolder::Videos, &["videos", "فيديو", "فيديوهات", "فيديوز", "فديوهات", "مقاطع فيديو", "مقاطع الفيديو"]),
+];
+
+// Words that may come before the folder name: "in", "from", "to", "on", and
+// "folder" in Modern Standard Arabic and in dialect spellings.
+const LEADING_WORDS: &[&str] = &["في", "من", "الى", "على", "مجلد", "فولدر", "فلدر", "فولدار"];
+
+// Letters glued to the front of a word: ب (in), ل (to), ك (like), و (and), ف (so).
+const CLITICS: &[char] = &['ب', 'ل', 'ك', 'و', 'ف'];
+
+impl StandardFolder {
+    /// The folder a name stands for, ignoring case, diacritics, ال, prefixes
+    /// and words such as "folder". Only the whole name is matched: extra words
+    /// after the folder name give no match.
+    fn from_name(name: &str) -> Option<Self> {
+        let name = normalize(name);
+        let mut words: Vec<&str> = name.split_whitespace().collect();
+        while words.len() > 1 && LEADING_WORDS.iter().any(|w| normalize(w) == words[0]) {
+            words.remove(0);
+        }
+        let mut forms = vec![words.join(" ")];
+        // Up to two glued letters, as in وبالمستندات.
+        for _ in 0..2 {
+            let last = forms.last()?;
+            let mut chars = last.chars();
+            let Some(first) = chars.next().filter(|c| CLITICS.contains(c)) else { break };
+            let after = chars.as_str();
+            if after.chars().count() <= 2 {
+                break;
+            }
+            // ل with ال is written لل: للمستندات.
+            let next = match after.strip_prefix('ل') {
+                Some(without) if first == 'ل' => without,
+                _ => after,
+            };
+            forms.push(next.to_string());
+        }
+        forms.iter().find_map(|form| {
+            let bare = form.strip_prefix("ال").unwrap_or(form);
+            FOLDER_NAMES
+                .iter()
+                .find(|(_, names)| names.iter().any(|n| normalize(n) == bare))
+                .map(|(folder, _)| *folder)
+        })
+    }
 }
 
 impl UserDirs {
     pub fn defaults(home: &Path) -> Self {
-        UserDirs { documents: home.join("Documents"), downloads: home.join("Downloads"), desktop: home.join("Desktop") }
+        UserDirs {
+            documents: home.join("Documents"),
+            downloads: home.join("Downloads"),
+            desktop: home.join("Desktop"),
+            pictures: home.join("Pictures"),
+            music: home.join("Music"),
+            videos: home.join("Videos"),
+        }
     }
 
     /// Reads the text of `user-dirs.dirs`. Entries that are missing, relative,
@@ -107,25 +189,25 @@ impl UserDirs {
                 "XDG_DOCUMENTS_DIR" => dirs.documents = path,
                 "XDG_DOWNLOAD_DIR" => dirs.downloads = path,
                 "XDG_DESKTOP_DIR" => dirs.desktop = path,
+                "XDG_PICTURES_DIR" => dirs.pictures = path,
+                "XDG_MUSIC_DIR" => dirs.music = path,
+                "XDG_VIDEOS_DIR" => dirs.videos = path,
                 _ => {}
             }
         }
         dirs
     }
 
-    /// The folder that an English or Arabic name stands for, ignoring case.
+    /// The folder that an English or Arabic name stands for.
     fn named(&self, name: &OsStr) -> Option<&Path> {
-        let name = normalize(name.to_str()?);
-        let is = |names: &[&str]| names.iter().any(|n| normalize(n) == name);
-        if is(&["Documents", "المستندات"]) {
-            Some(&self.documents)
-        } else if is(&["Downloads", "التنزيلات"]) {
-            Some(&self.downloads)
-        } else if is(&["Desktop", "سطح المكتب"]) {
-            Some(&self.desktop)
-        } else {
-            None
-        }
+        Some(match StandardFolder::from_name(name.to_str()?)? {
+            StandardFolder::Documents => &self.documents,
+            StandardFolder::Downloads => &self.downloads,
+            StandardFolder::Desktop => &self.desktop,
+            StandardFolder::Pictures => &self.pictures,
+            StandardFolder::Music => &self.music,
+            StandardFolder::Videos => &self.videos,
+        })
     }
 }
 
@@ -270,11 +352,12 @@ impl FileSandbox {
             .iter()
             .find_map(|c| fs::canonicalize(c).ok())
             .ok_or_else(|| FileError::NotFound(input.trim().to_string()))?;
-        if real.starts_with(&self.root) {
-            Ok(real)
-        } else {
-            Err(FileError::OutsideRoot)
+        let Ok(inside) = real.strip_prefix(&self.root) else { return Err(FileError::OutsideRoot) };
+        // A link may lead into a hidden folder, so this is judged on the real path.
+        if inside.components().any(|c| matches!(c, Component::Normal(name) if name.to_string_lossy().starts_with('.'))) {
+            return Err(FileError::Hidden);
         }
+        Ok(real)
     }
 
     pub fn list_files(&self, path: &str) -> Result<Listing, FileError> {
@@ -865,6 +948,108 @@ mod tests {
         assert_eq!(first("Desktop"), "in-Desktop.txt");
         // A mapped folder cannot be used to climb out.
         assert_eq!(sandbox.list_files("المستندات/../.."), Err(FileError::OutsideRoot));
+    }
+
+    fn standard_folder_fixture() -> Fixture {
+        let fx = Fixture::new();
+        for dir in ["Documents", "Downloads", "Pictures", "Music", "Videos", "Desktop"] {
+            touch(&fx.home.join(dir).join(format!("in-{dir}.txt")));
+        }
+        fx
+    }
+
+    #[test]
+    fn standard_folder_names_in_arabic_and_dialects_reach_the_folder() {
+        let fx = standard_folder_fixture();
+        let sandbox = fx.sandbox();
+        let cases: &[(&str, &[&str])] = &[
+            ("Documents", &[
+                "المستندات", "مستندات", "في المستندات", "بالمستندات", "للمستندات", "مجلد المستندات", "فولدر المستندات",
+                "فولدر مستندات", "في مجلد المستندات", "الوثائق", "المُستَنَدات", "documents",
+            ]),
+            ("Downloads", &[
+                "التنزيلات", "تنزيلات", "في التنزيلات", "بالتنزيلات", "فولدر التنزيلات", "مجلد التنزيلات", "التحميلات",
+                "داونلود", "الداونلود", "داونلودز", "فولدر الداونلود", "في الداونلود", "downloads",
+            ]),
+            ("Pictures", &["الصور", "صور", "في الصور", "مجلد الصور", "فولدر الصور", "pictures"]),
+            ("Music", &["الموسيقى", "موسيقى", "الموسيقا", "في الموسيقى", "مجلد الموسيقى", "الأغاني", "ميوزك", "music"]),
+            ("Videos", &["الفيديو", "فيديو", "الفيديوهات", "مقاطع الفيديو", "في الفيديوهات", "مجلد الفيديو", "videos"]),
+            ("Desktop", &["سطح المكتب", "في سطح المكتب", "بسطح المكتب", "الديسكتوب", "ديسكتوب", "desktop"]),
+        ];
+        for (dir, forms) in cases {
+            for form in *forms {
+                for path in [form.to_string(), format!("~/{form}")] {
+                    let listing = sandbox.list_files(&path);
+                    let got = listing.as_ref().map(|l| names(&l.entries));
+                    assert_eq!(got, Ok(vec![format!("in-{dir}.txt")]), "{path}");
+                }
+            }
+        }
+        assert_eq!(names(&sandbox.list_files("في المستندات/").unwrap().entries), ["in-Documents.txt"]);
+    }
+
+    #[test]
+    fn standard_folder_names_follow_user_dirs() {
+        let fx = Fixture::new();
+        let config_dir = fx.home.join(".config");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("user-dirs.dirs"),
+            "XDG_PICTURES_DIR=\"$HOME/Fotos\"\nXDG_MUSIC_DIR=\"$HOME/Tunes\"\nXDG_VIDEOS_DIR=\"$HOME/Clips\"\n",
+        )
+        .unwrap();
+        for dir in ["Fotos", "Tunes", "Clips"] {
+            touch(&fx.home.join(dir).join(format!("in-{dir}.txt")));
+        }
+        let sandbox = fx.sandbox();
+        for (path, file) in [("الصور", "Fotos"), ("Music", "Tunes"), ("مجلد الفيديو", "Clips")] {
+            assert_eq!(names(&sandbox.list_files(path).unwrap().entries), [format!("in-{file}.txt")], "{path}");
+        }
+    }
+
+    #[test]
+    fn a_real_folder_beats_every_mapped_form() {
+        let fx = standard_folder_fixture();
+        for form in ["في المستندات", "داونلود", "فولدر التنزيلات", "الصور"] {
+            touch(&fx.home.join(form).join("real.txt"));
+        }
+        let sandbox = fx.sandbox();
+        for form in ["في المستندات", "داونلود", "فولدر التنزيلات", "الصور"] {
+            assert_eq!(names(&sandbox.list_files(form).unwrap().entries), ["real.txt"], "{form}");
+        }
+    }
+
+    #[test]
+    fn unrelated_names_are_not_mapped_and_mapped_names_cannot_escape() {
+        let fx = standard_folder_fixture();
+        let sandbox = fx.sandbox();
+        for path in ["مستندات الشركة", "فولدر", "في", "ال", "التنزيلات الجديدة", "صورة", "documents2"] {
+            assert_eq!(sandbox.list_files(path), Err(FileError::NotFound(path.into())), "{path}");
+        }
+        for path in ["في المستندات/../..", "داونلود/../../outside", "الصور/../.."] {
+            assert_eq!(sandbox.list_files(path), Err(FileError::OutsideRoot), "{path}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&fx.outside, fx.home.join("Music/out")).unwrap();
+            assert_eq!(sandbox.list_files("الموسيقى/out"), Err(FileError::OutsideRoot));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_into_a_hidden_folder_is_refused_before_it_is_read() {
+        use std::os::unix::fs::symlink;
+        let fx = Fixture::new();
+        touch(&fx.home.join(".ssh/id_secret"));
+        touch(&fx.home.join("Documents/a.txt"));
+        symlink(fx.home.join(".ssh"), fx.home.join("innocent")).unwrap();
+        symlink("../.ssh", fx.home.join("Documents/relative")).unwrap();
+        let sandbox = fx.sandbox();
+        for path in ["innocent", "~/innocent", "Documents/relative", "المستندات/relative"] {
+            assert_eq!(sandbox.list_files(path), Err(FileError::Hidden), "{path}");
+        }
+        assert_eq!(names(&sandbox.list_files("Documents").unwrap().entries), ["a.txt", "relative"]);
     }
 
     #[test]
