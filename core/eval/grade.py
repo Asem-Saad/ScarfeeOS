@@ -12,9 +12,10 @@ The results come from run_eval.ps1 (model replies), or with --pipeline from run_
           as a pass, and is also counted in its own column, held.
   args  - the identifier args match: name (case-insensitive), query, lang and attendees must
           equal the expected value (trimmed, case-insensitive; no translation). A list_files
-          path matches when its last folder name does ("Documents" and "~/Documents").
+          path matches when its last folder name does ("Documents" and "~/Documents"), or when it is
+          an Arabic name the core maps to that folder (المستندات, ~/التنزيلات).
   strict - every expected arg except `time`, strictly as above, with free text included and
-          the path compared in full. Paraphrases fail this on purpose.
+          the path compared in full, except those Arabic folder names. Paraphrases fail this on purpose.
   lenient - the same args, but free text (reminder `text`, meeting `title`) passes when it has
           the expected key words, and attendees ignore Arabic letter variants. Key words are
           compared after dropping diacritics and tatweel, folding alef/ya/ta marbuta/hamza
@@ -129,9 +130,50 @@ def last_folder(path):
     return parts[-1].casefold() if parts else ''
 
 
+# The Arabic names the core maps to a standard folder, copied from FOLDER_NAMES in
+# StandardFolder::from_name (core/src/actions.rs), written without the leading ال. Only these
+# forms are mirrored, not the leading words or glued letters the core also strips.
+CORE_FOLDER_NAMES = {
+    'documents': ['مستندات', 'وثائق', 'دوكيمنتس', 'دوكيومنتس'],
+    'downloads': ['تنزيلات', 'تحميلات', 'داونلود', 'داونلودز', 'داونلودات', 'دونلود', 'دانلود', 'دونلودز'],
+    'desktop': ['سطح المكتب', 'سطح مكتب', 'ديسكتوب'],
+    'pictures': ['صور', 'بكتشرز', 'بيكتشرز'],
+    'music': ['موسيقى', 'موسيقا', 'اغاني', 'ميوزك'],
+    'videos': ['فيديو', 'فيديوهات', 'فيديوز', 'فديوهات', 'مقاطع فيديو', 'مقاطع الفيديو'],
+}
+
+
+def core_normalize(text):
+    """Mirrors normalize in core/src/actions.rs."""
+    text = ''.join(ch for ch in text if not '\u064b' <= ch <= '\u0652')
+    text = text.translate({0x623: 'ا', 0x625: 'ا', 0x622: 'ا', 0x629: 'ه', 0x649: 'ي'})
+    return ''.join(chr(ord(ch) - 0x0660 + 0x30) if '\u0660' <= ch <= '\u0669' else ch for ch in text).lower()
+
+
+CORE_FOLDERS = {core_normalize(name): folder for folder, names in CORE_FOLDER_NAMES.items() for name in names}
+
+
+def core_folder(path):
+    """The standard folder the core maps a bare Arabic folder name, with or without ~/, to."""
+    name = path.strip()
+    if name.startswith('~'):
+        name = name[1:].lstrip('/\\')
+    name = core_normalize(name.rstrip('/\\').strip())
+    return CORE_FOLDERS.get(name[2:] if name.startswith('ال') else name)
+
+
+def maps_to_same_folder(got, want):
+    folder = core_folder(got)
+    return folder is not None and folder == last_folder(want)
+
+
+def path_matches(got, want, compare):
+    return compare(got, want) or maps_to_same_folder(got, want)
+
+
 def arg_matches(key, got, want):
     if key == 'path' and isinstance(got, str) and isinstance(want, str):
-        return last_folder(got) == last_folder(want)
+        return path_matches(got, want, lambda g, w: last_folder(g) == last_folder(w))
     return normalize(got) == normalize(want)
 
 
@@ -149,9 +191,15 @@ def check_values(expected, arguments, skip, compare):
     return ('fail', '; '.join(wrong)) if wrong else ('pass', '')
 
 
+def strict_matches(key, got, want):
+    if key == 'path' and isinstance(got, str) and isinstance(want, str):
+        return path_matches(got, want, lambda g, w: normalize(g) == normalize(w))
+    return normalize(got) == normalize(want)
+
+
 def check_strict(expected, arguments):
     """Compares every expected arg except `time` strictly. Extra args are ignored."""
-    return check_values(expected, arguments, ('time',), lambda key, got, want: normalize(got) == normalize(want))
+    return check_values(expected, arguments, ('time',), strict_matches)
 
 
 def check_args(expected, arguments):

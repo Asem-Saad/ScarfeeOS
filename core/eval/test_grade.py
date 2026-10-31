@@ -247,6 +247,44 @@ class IdentifierArgTests(unittest.TestCase):
         self.assertEqual(grade.check_strict({'path': '~/Documents'}, {'path': 'Documents'})[0], 'fail')
         self.assertEqual(grade.check_strict({'path': '~/Documents'}, {'path': '~/documents'})[0], 'pass')
 
+    def test_core_arabic_folder_names_pass_both_checks(self):
+        for got in ['المستندات', '~/المستندات', 'مستندات', '~/الوثائق', ' ~/المُستندات/ ']:
+            self.assertEqual(self.args({'path': '~/Documents'}, path=got), 'pass', got)
+            self.assertEqual(grade.check_strict({'path': '~/Documents'}, {'path': got})[0], 'pass', got)
+        for got in ['التنزيلات', '~/تحميلات', 'داونلود']:
+            self.assertEqual(self.args({'path': '~/Downloads'}, path=got), 'pass', got)
+            self.assertEqual(grade.check_strict({'path': '~/Downloads'}, {'path': got})[0], 'pass', got)
+
+    def test_wrong_arabic_folder_still_fails(self):
+        for expected, got in [('~/Documents', 'التنزيلات'), ('~/Downloads', '~/المستندات'), ('~/Documents', 'الصور'),
+                              ('~/Documents', '~/المستندات/قديم'), ('~/Documents', 'مجلد غير معروف'),
+                              ('~/Documents', '/المستندات')]:
+            self.assertEqual(self.args({'path': expected}, path=got), 'fail', got)
+            self.assertEqual(grade.check_strict({'path': expected}, {'path': got})[0], 'fail', got)
+            self.assertEqual(grade.check_lenient({'path': expected}, {'path': got})[0], 'fail', got)
+
+    def test_arabic_folder_prompts_pass_with_fixture_results(self):
+        here = Path(__file__).resolve().parent
+        wanted = {'command-004': 'المستندات', 'dialect-eg-003': 'المستندات',
+                  'dialect-gulf-003': 'المستندات', 'dialect-gulf-004': 'التنزيلات'}
+        prompts = [p for name in ('prompts.jsonl', 'prompts-dialects.jsonl') for p in grade.read_jsonl(here / name)
+                   if p['id'] in wanted]
+        self.assertEqual(len(prompts), 4)
+        for prompt in prompts:
+            row = {'id': prompt['id'], 'reply': 'ok', 'tool_calls': [call('list_files', path=wanted[prompt['id']])]}
+            g = grade.grade_row(prompt, row, TODAY)
+            self.assertEqual((g['args'], g['strict'], g['lenient']), ('pass', 'pass', 'pass'), prompt['id'])
+            swapped = {'المستندات': 'التنزيلات', 'التنزيلات': 'المستندات'}[wanted[prompt['id']]]
+            row['tool_calls'] = [call('list_files', path=swapped)]
+            g = grade.grade_row(prompt, row, TODAY)
+            self.assertEqual((g['strict'], g['lenient']), ('fail', 'fail'), prompt['id'])
+
+    def test_folder_table_is_still_in_the_core(self):
+        source = (Path(__file__).resolve().parent.parent / 'src' / 'actions.rs').read_text(encoding='utf-8')
+        for folder, names in grade.CORE_FOLDER_NAMES.items():
+            for name in names:
+                self.assertIn(f'"{name}"', source, f'{name} ({folder}) is no longer in core/src/actions.rs')
+
     def test_name_ignores_case_but_not_language(self):
         self.assertEqual(self.args({'name': 'calculator'}, name=' Calculator '), 'pass')
         self.assertEqual(self.args({'name': 'calculator'}, name='الآلة الحاسبة'), 'fail')
