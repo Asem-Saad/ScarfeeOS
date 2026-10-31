@@ -234,7 +234,11 @@
       }
       for (const message of active.messages) {
         if (message.role === 'user') {
-          messageList.append(renderMessage(true, [{ tone: 'reply', text: message.text }]));
+          const blocks = [{ tone: 'reply', text: message.text }];
+          if (message.interrupted === true) {
+            blocks.push({ tone: 'note', text: t('assistant-interrupted') });
+          }
+          messageList.append(renderMessage(true, blocks));
         } else if (message.response) {
           messageList.append(renderMessage(false, describeResponse(message.response, t, i18n.getLanguage(), settings.get()), null, message));
         } else {

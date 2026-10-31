@@ -16,6 +16,7 @@ assistant-role-user = أنت
 assistant-role-assistant = المساعد
 assistant-waiting = أعمل على طلبك. قد يستغرق الرد أكثر من دقيقة.
 assistant-waiting-elapsed = الوقت المنقضي: { $time }
+assistant-interrupted = انقطع الرد. اسأل مرة أخرى للحصول على إجابة.
 assistant-unreachable = تعذّر الاتصال بالمساعد. تأكد من أن جسر التطوير يعمل.
 assistant-error = حدث خطأ: { $message }
 assistant-other = أجاب المساعد بصيغة لا تستطيع هذه الواجهة عرضها بعد.

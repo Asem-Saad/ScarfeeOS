@@ -16,6 +16,7 @@ assistant-role-user = You
 assistant-role-assistant = Assistant
 assistant-waiting = Working on it. A reply can take more than a minute.
 assistant-waiting-elapsed = Elapsed: { $time }
+assistant-interrupted = The reply was interrupted. Ask again to get an answer.
 assistant-unreachable = The assistant could not be reached. Check that the development bridge is running.
 assistant-error = Something went wrong: { $message }
 assistant-other = The assistant answered in a way this panel cannot show yet.

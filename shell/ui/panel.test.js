@@ -554,6 +554,52 @@ test('a reply still waiting is not stored, and a restored conversation can go on
   await tick();
 });
 
+test('a question whose reply was lost when the page was left says so, in the current language, and is never resent', async () => {
+  const session = memoryStorage();
+  let finish;
+  const first = await loadPanel(() => new Promise((resolve) => { finish = resolve; }), undefined, session);
+  await ask(first.ids, 'slow question');
+  assert.doesNotMatch(shown(first.ids), /interrupted/, 'nothing is wrong while the reply is still coming');
+  const savedBefore = session.data.get(SESSION_KEY);
+
+  const second = await loadPanel(sequence({ kind: 'declined' }), undefined, session);
+  assert.match(shown(second.ids), /slow question[^]*The reply was interrupted\. Ask again to get an answer\./);
+  assert.strictEqual(second.posts.length, 0, 'nothing is resent');
+  assert.strictEqual(second.sendButton.disabled, false);
+  assert.strictEqual(session.data.get(SESSION_KEY), savedBefore, 'the stored format has no new field');
+  const note = second.ids['message-list'].all((n) => n.className === 'message-text message-note');
+  assert.strictEqual(note.length, 1);
+  assert.strictEqual(second.ids['message-list'].children[0].children.includes(note[0]), true, 'the note is inside the question');
+  assert.strictEqual(second.ids['message-list'].all((n) => n.attributes['aria-busy'] === 'true').length, 0);
+
+  change(second.ids.language, 'ar');
+  assert.match(shown(second.ids), /انقطع الرد\. اسأل مرة أخرى للحصول على إجابة\./);
+  assert.doesNotMatch(shown(second.ids), /The reply was interrupted/);
+  change(second.ids.language, 'en');
+
+  await ask(second.ids, 'again');
+  assert.deepStrictEqual(second.posts, [{ text: 'again', language: 'en' }]);
+  assert.strictEqual((shown(second.ids).match(/The reply was interrupted/g) || []).length, 1, 'only the lost question carries the note');
+  const third = await loadPanel(async () => assert.fail('nothing is sent'), undefined, session);
+  assert.match(shown(third.ids), /slow question[^]*The reply was interrupted[^]*again[^]*does not answer religious/);
+  assert.strictEqual((shown(third.ids).match(/The reply was interrupted/g) || []).length, 1);
+  finish(reply({ kind: 'declined' }));
+  await tick();
+  await tick();
+});
+
+test('conversations stored before the note, and answered ones, show no note', async () => {
+  const stored = JSON.stringify({ version: 1, active: 1, conversations: [{ id: 1, messages: [
+    { role: 'user', text: 'old question' },
+    { role: 'assistant', response: { kind: 'declined' } },
+    { role: 'user', text: 'old time' },
+    { role: 'assistant', response: { kind: 'unreachable' } },
+  ] }] });
+  const { ids } = await loadPanel(async () => assert.fail('nothing is sent'), undefined, memoryStorage({ [SESSION_KEY]: stored }));
+  assert.match(shown(ids), /old question[^]*old time/);
+  assert.doesNotMatch(shown(ids), /interrupted/);
+});
+
 test('conversations come back with their order, the active one, and new ones get new ids', async () => {
   const session = memoryStorage();
   const first = await loadPanel(sequence({ kind: 'declined' }, { kind: 'declined' }), undefined, session);

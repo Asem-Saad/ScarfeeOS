@@ -467,7 +467,8 @@ function packConversations(conversations, active) {
 
 // The reverse, for text that may be old, damaged or edited: anything that is not the expected shape is dropped
 // and null means nothing usable. Every restored reply is marked answered, so a Confirm or Cancel from an earlier
-// page can never be clicked again.
+// page can never be clicked again. A question that no assistant message follows lost its reply when the page was
+// left, so it is marked interrupted. That is worked out here and not stored, so older saves need no change.
 function unpackConversations(text) {
   let data;
   try {
@@ -486,12 +487,14 @@ function unpackConversations(text) {
       continue;
     }
     const messages = [];
-    for (const message of stored.messages) {
+    for (const [index, message] of stored.messages.entries()) {
       if (!isPlainObject(message)) {
         continue;
       }
       if (message.role === 'user' && typeof message.text === 'string') {
-        messages.push({ role: 'user', text: message.text });
+        const next = stored.messages[index + 1];
+        const answered = isPlainObject(next) && next.role === 'assistant';
+        messages.push(answered ? { role: 'user', text: message.text } : { role: 'user', text: message.text, interrupted: true });
       } else if (message.role === 'assistant' && isPlainObject(message.response) && typeof message.response.kind === 'string') {
         messages.push({ role: 'assistant', response: message.response, answered: true });
       }

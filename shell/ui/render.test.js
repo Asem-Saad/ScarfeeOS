@@ -463,6 +463,25 @@ test('packConversations and unpackConversations keep the text and roles, and mar
   });
 });
 
+test('unpackConversations marks a question with no assistant message after it as interrupted, and packConversations does not store that', () => {
+  const stored = JSON.stringify({ version: 1, active: 1, conversations: [{ id: 1, messages: [
+    { role: 'user', text: 'lost' },
+    { role: 'user', text: 'answered' },
+    { role: 'assistant', response: { kind: 'declined' } },
+    { role: 'user', text: 'also lost' },
+  ] }] });
+  const { conversations } = unpackConversations(stored);
+  assert.deepStrictEqual(conversations[0].messages, [
+    { role: 'user', text: 'lost', interrupted: true },
+    { role: 'user', text: 'answered' },
+    { role: 'assistant', response: { kind: 'declined' }, answered: true },
+    { role: 'user', text: 'also lost', interrupted: true },
+  ]);
+  assert.deepStrictEqual(JSON.parse(packConversations(conversations, null)).conversations[0].messages.map(Object.keys), [['role', 'text'], ['role', 'text'], ['role', 'response'], ['role', 'text']]);
+  assert.strictEqual(translator('en')('assistant-interrupted'), 'The reply was interrupted. Ask again to get an answer.');
+  assert.strictEqual(translator('ar')('assistant-interrupted'), 'انقطع الرد. اسأل مرة أخرى للحصول على إجابة.');
+});
+
 test('unpackConversations drops what is not the expected shape and says null for nothing usable', () => {
   for (const bad of [null, '', 'x', '[]', '{}', '{"version":1}', '{"version":2,"conversations":[]}', '{"version":1,"conversations":[]}']) {
     assert.strictEqual(unpackConversations(bad), null, String(bad));
@@ -478,7 +497,7 @@ test('unpackConversations drops what is not the expected shape and says null for
       { id: 5, messages: 'nope' },
     ],
   });
-  assert.deepStrictEqual(unpackConversations(text), { activeId: 7, conversations: [{ id: 4, messages: [{ role: 'user', text: 'kept' }] }] });
+  assert.deepStrictEqual(unpackConversations(text), { activeId: 7, conversations: [{ id: 4, messages: [{ role: 'user', text: 'kept', interrupted: true }] }] });
 });
 
 test('only the newest 200 messages are kept, when packing and when unpacking', () => {
