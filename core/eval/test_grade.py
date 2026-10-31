@@ -5,7 +5,7 @@ import stat
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
 from io import StringIO
 from pathlib import Path
@@ -104,7 +104,7 @@ class GradeRowTests(unittest.TestCase):
     def test_all_pass(self):
         res = result([call('create_reminder', text='  Call The Bank ', time='2026-10-31T10:00:00')])
         g = self.grade(reminder_prompt(), res)
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time'], g['issues']),
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time'], g['issues']),
                          ('pass', 'pass', 'pass', 'pass', []))
         self.assertEqual((g['args'], g['held']), (None, False))
 
@@ -112,16 +112,16 @@ class GradeRowTests(unittest.TestCase):
         res = result([{'name': 'create_reminder',
                        'arguments': {'text': 'call the bank', 'time': '2026-10-31T10:00:00', 'x': 1}}])
         g = self.grade(reminder_prompt(), res)
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time']), ('pass', 'pass', 'pass', 'pass'))
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time']), ('pass', 'pass', 'pass', 'pass'))
 
     def test_checks_are_reported_separately(self):
         res = result([call('create_reminder', text='call the dentist', time='2026-10-31T10:00:00')])
         g = self.grade(reminder_prompt(), res)
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time']), ('pass', 'pass', 'fail', 'pass'))
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time']), ('pass', 'pass', 'fail', 'pass'))
         self.assertEqual(g['issues'], [])
         res = result([call('create_reminder', text='call the bank', time='2026-10-31T11:00:00')])
         g = self.grade(reminder_prompt(), res)
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time']), ('pass', 'pass', 'pass', 'fail'))
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time']), ('pass', 'pass', 'pass', 'fail'))
 
     def test_languages_are_not_interchangeable(self):
         prompt = {'id': 'command-002', 'category': 'command', 'prompt': 'x',
@@ -130,7 +130,7 @@ class GradeRowTests(unittest.TestCase):
         self.assertEqual(self.grade(prompt, res)['args'], 'fail')
         res['tool_calls'] = [call('open_app', name='Calculator')]
         g = self.grade(prompt, res)
-        self.assertEqual((g['args'], g['exact']), ('pass', 'pass'))
+        self.assertEqual((g['args'], g['strict']), ('pass', 'pass'))
 
     def test_attendees_ignore_order_and_case(self):
         prompt = {'id': 'command-009', 'category': 'command', 'prompt': 'x',
@@ -138,21 +138,21 @@ class GradeRowTests(unittest.TestCase):
                       'title': 'Project Review', 'time': 'Sunday 14:00', 'attendees': ['Sara', 'Omar']}}}
         args = dict(title='project review', time='2026-11-01T14:00:00', attendees=['omar', 'SARA'])
         g = self.grade(prompt, {'id': 'command-009', 'tool_calls': [call('schedule_meeting', **args)]})
-        self.assertEqual((g['tool'], g['args'], g['text'], g['exact'], g['time']),
+        self.assertEqual((g['tool'], g['args'], g['text'], g['strict'], g['time']),
                          ('pass', 'pass', 'pass', 'pass', 'pass'))
         args['attendees'] = ['Sara']
         g = self.grade(prompt, {'id': 'command-009', 'tool_calls': [call('schedule_meeting', **args)]})
-        self.assertEqual((g['args'], g['exact']), ('fail', 'fail'))
+        self.assertEqual((g['args'], g['strict']), ('fail', 'fail'))
 
     def test_missing_arg_and_bad_json(self):
         g = self.grade(reminder_prompt(), result([call('create_reminder', time='2026-10-31T10:00:00')]))
-        self.assertEqual((g['text'], g['exact'], g['time']), ('fail', 'fail', 'pass'))
+        self.assertEqual((g['text'], g['strict'], g['time']), ('fail', 'fail', 'pass'))
         g = self.grade(reminder_prompt(), result([{'name': 'create_reminder', 'arguments': '{oops'}]))
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time']), ('pass', 'fail', 'fail', 'fail'))
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time']), ('pass', 'fail', 'fail', 'fail'))
 
     def test_wrong_or_no_tool(self):
         g = self.grade(reminder_prompt(), result([call('open_app', name='x')]))
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time']), ('fail', 'na', 'na', 'na'))
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time']), ('fail', 'na', 'na', 'na'))
         g = self.grade(reminder_prompt(), result([]))
         self.assertEqual(g['tool'], 'fail')
         self.assertIn('called none', g['issues'][0])
@@ -170,7 +170,7 @@ class GradeRowTests(unittest.TestCase):
     def test_prompt_without_tool_only_checks_leakage(self):
         prompt = {'id': 'qa-001', 'category': 'qa', 'prompt': 'x'}
         g = self.grade(prompt, {'id': 'qa-001', 'reply': 'Ответ', 'tool_calls': []})
-        self.assertEqual((g['tool'], g['args'], g['exact'], g['text'], g['time'], g['leakage']),
+        self.assertEqual((g['tool'], g['args'], g['strict'], g['text'], g['time'], g['leakage']),
                          (None, None, None, None, None, ['Cyrillic']))
         self.assertEqual(self.grade(prompt, {'id': 'qa-001', 'reply': None})['leakage'], [])
 
@@ -181,9 +181,9 @@ class GradeRowTests(unittest.TestCase):
 
     def test_run_error_and_missing_row(self):
         g = self.grade(reminder_prompt(), result(error='timeout'))
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time']), ('error', 'na', 'na', 'na'))
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time']), ('error', 'na', 'na', 'na'))
         g = self.grade(reminder_prompt(), None)
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time']), ('missing', 'na', 'na', 'na'))
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time']), ('missing', 'na', 'na', 'na'))
 
 
 class TextCheckTests(unittest.TestCase):
@@ -225,7 +225,7 @@ class TextCheckTests(unittest.TestCase):
         res = {'id': 'command-008', 'tool_calls': [call('create_reminder', text='call the bank',
                                                          time='2026-10-31T10:00:00')]}
         g = self.grade_row(prompt, res)
-        self.assertEqual((g['tool'], g['text'], g['exact'], g['time']), ('pass', 'fail', 'fail', 'pass'))
+        self.assertEqual((g['tool'], g['text'], g['strict'], g['time']), ('pass', 'fail', 'fail', 'pass'))
         self.assertTrue(g['issues'][0].startswith('text: text='))
 
     def grade_row(self, prompt, res):
@@ -243,9 +243,9 @@ class IdentifierArgTests(unittest.TestCase):
         for got in ['~/Downloads', '~', '', '~/Documents/Old', 5, None]:
             self.assertEqual(self.args({'path': '~/Documents'}, path=got), 'fail', got)
 
-    def test_path_is_still_strict_in_exact(self):
-        self.assertEqual(grade.check_exact({'path': '~/Documents'}, {'path': 'Documents'})[0], 'fail')
-        self.assertEqual(grade.check_exact({'path': '~/Documents'}, {'path': '~/documents'})[0], 'pass')
+    def test_path_is_still_strict_in_strict(self):
+        self.assertEqual(grade.check_strict({'path': '~/Documents'}, {'path': 'Documents'})[0], 'fail')
+        self.assertEqual(grade.check_strict({'path': '~/Documents'}, {'path': '~/documents'})[0], 'pass')
 
     def test_name_ignores_case_but_not_language(self):
         self.assertEqual(self.args({'name': 'calculator'}, name=' Calculator '), 'pass')
@@ -361,7 +361,7 @@ class PipelineGradeTests(unittest.TestCase):
                 continue
             self.assertEqual(grades[ident]['tool'], 'pass', ident)
         self.assertEqual({i for i, g in grades.items() if g['held']}, {'command-011', 'command-012'})
-        self.assertEqual({i for i, g in grades.items() if g['exact'] == 'fail'},
+        self.assertEqual({i for i, g in grades.items() if g['strict'] == 'fail'},
                          {'command-003', 'command-007', 'command-008'})
         for ident in ['command-007', 'command-008', 'command-009', 'command-010', 'dialect-003']:
             self.assertEqual((grades[ident]['text'], grades[ident]['time']), ('pass', 'pass'), ident)
@@ -407,15 +407,238 @@ class PipelineGradeTests(unittest.TestCase):
                   'tool': {'name': 'open_app', 'args': {'name': 'calculator'}}}
         self.assertEqual(self.graded({'command-001': outcome}, [prompt])[0]['leakage'], ['Cyrillic'])
 
-    def test_report_has_held_exact_and_text_columns(self):
+    def test_report_has_held_strict_lenient_and_text_columns(self):
         text = grade.format_report(self.graded(OUTCOMES), TODAY)
         header = next(l for l in text.splitlines() if l.startswith('category'))
-        self.assertEqual(header.split(), ['category', 'prompts', 'tool', 'held', 'args', 'exact', 'text', 'time',
+        self.assertEqual(header.split(), ['category', 'prompts', 'tool', 'held', 'args', 'strict', 'lenient', 'text', 'time',
                                           'unchecked', 'leakage'])
         row = next(l for l in text.splitlines() if l.startswith('command'))
-        self.assertEqual(row.split(), ['command', '14', '12/12', '2', '10/10', '9/12', '4/4', '4/4', '0', '0'])
+        self.assertEqual(row.split(), ['command', '14', '12/12', '2', '10/10', '9/12', '11/12', '4/4', '4/4', '0', '0'])
         dialect = next(l for l in text.splitlines() if l.startswith('dialect'))
-        self.assertEqual(dialect.split()[:6], ['dialect', '7', '2/2', '0', '1/1', '2/2'])
+        self.assertEqual(dialect.split()[:7], ['dialect', '7', '2/2', '0', '1/1', '2/2', '2/2'])
+
+
+FIXTURES = Path(__file__).resolve().parent / 'fixtures'
+
+
+def fixture_grades(name):
+    prompts = grade.read_jsonl(FIXTURES / 'prompts.jsonl')
+    return {g['id']: g for g in grade.grade_all(prompts, grade.read_jsonl(FIXTURES / name), TODAY)}
+
+
+class LenientTextTests(unittest.TestCase):
+    def text(self, got, want, key='text'):
+        return grade.lenient_matches(key, got, want)
+
+    def test_fold_arabic(self):
+        self.assertEqual(grade.fold_arabic('أَحْمَد إبراهيم آمنة'), 'احمد ابراهيم امنه')
+        self.assertEqual(grade.fold_arabic('مدرسـة'), 'مدرسه')
+        self.assertEqual(grade.fold_arabic('٢٠٢٦ ۲۰۲٦ 2026'), '2026 2026 2026')
+        self.assertEqual(grade.fold_arabic('Project REVIEW'), 'project review')
+
+    def test_paraphrase_with_the_same_key_words_passes(self):
+        self.assertTrue(self.text('اتصل بالبنك', 'الاتصال بالبنك'))
+        self.assertTrue(self.text('اتصل بالبنك غدا', 'الاتصال بالبنك'))
+        self.assertTrue(self.text('Calling the bank', 'call the bank'))
+        self.assertTrue(self.text('Call bank today', 'call the bank'))
+        self.assertTrue(self.text('أكلم المهندس', 'اكلم المهندس'))
+        self.assertTrue(self.text('كلم المهندس', 'أكلم المهندس'))
+
+    def test_letter_variants_and_diacritics_pass(self):
+        self.assertTrue(self.text('مراجعة المشروع', 'مراجعه المشروع', 'title'))
+        self.assertTrue(self.text('مُرَاجَعَةُ الْمَشْرُوعِ', 'مراجعة المشروع', 'title'))
+        self.assertTrue(self.text('إسلام', 'اسلام'))
+        self.assertTrue(self.text('ميزانية ٢٠٢٦', 'ميزانية 2026'))
+
+    def test_missing_key_word_or_synonym_fails(self):
+        self.assertFalse(self.text('اتصل بالمطعم', 'الاتصال بالبنك'))
+        self.assertFalse(self.text('اتصل', 'الاتصال بالبنك'))
+        self.assertFalse(self.text('phone the bank', 'call the bank'))
+        self.assertFalse(self.text('call the bank', 'call the dentist'))
+        self.assertFalse(self.text('', 'call the bank'))
+        self.assertFalse(self.text(None, 'call the bank'))
+        self.assertFalse(self.text('Project', 'Project Review', 'title'))
+
+    def test_file_names_dates_and_times_stay_exact(self):
+        self.assertFalse(self.text('ميزانيه 2026', 'ميزانية 2026', 'query'))
+        self.assertFalse(self.text('budget 2025', 'budget 2026', 'query'))
+        self.assertTrue(self.text(' Budget 2026 ', 'budget 2026', 'query'))
+        self.assertFalse(self.text('2026-10-30T10:00:00', '2026-10-31T10:00:00', 'time'))
+        self.assertFalse(self.text('Documents', 'Downloads', 'path'))
+        self.assertTrue(self.text('~/Documents', 'Documents', 'path'))
+        self.assertFalse(self.text('ar', 'en', 'lang'))
+
+    def test_attendees_fold_letters_but_not_names(self):
+        self.assertTrue(self.text(['عُمر', 'سارة'], ['سارة', 'عمر'], 'attendees'))
+        self.assertTrue(self.text(['اسلام'], ['إسلام'], 'attendees'))
+        self.assertFalse(self.text(['عمر'], ['سارة', 'عمر'], 'attendees'))
+        self.assertFalse(self.text(['Sara', 'Omer'], ['Sara', 'Omar'], 'attendees'))
+        self.assertFalse(self.text('Sara', ['Sara'], 'attendees'))
+
+    def test_strict_and_lenient_are_reported_separately_for_a_row(self):
+        prompt = {'id': 'command-008', 'category': 'command', 'prompt': 'ذكّرني بالاتصال بالبنك غدًا.',
+                  'tool': {'name': 'create_reminder', 'args': {'text': 'الاتصال بالبنك', 'time': 'tomorrow 10:00'}}}
+        res = {'id': 'command-008', 'tool_calls': [call('create_reminder', text='اتصل بالبنك',
+                                                         time='2026-10-31T10:00:00')]}
+        g = grade.grade_row(prompt, res, TODAY)
+        self.assertEqual((g['strict'], g['lenient'], g['text'], g['issues']), ('fail', 'pass', 'pass', []))
+        res['tool_calls'] = [call('create_reminder', text='اتصل بالمطعم', time='2026-10-31T10:00:00')]
+        g = grade.grade_row(prompt, res, TODAY)
+        self.assertEqual((g['strict'], g['lenient'], g['text']), ('fail', 'fail', 'pass'))
+        self.assertIn('الاتصال بالبنك', g['lenient_detail'])
+
+    def test_no_tool_call_is_na_for_both(self):
+        g = grade.grade_row(reminder_prompt(), result(error='timeout'), TODAY)
+        self.assertEqual((g['strict'], g['lenient']), ('na', 'na'))
+
+    def test_lenient_never_fails_what_strict_passes(self):
+        for name in ('before.jsonl', 'after.jsonl'):
+            for g in fixture_grades(name).values():
+                if g['strict'] == 'pass':
+                    self.assertEqual(g['lenient'], 'pass', g['id'])
+        grades = PipelineGradeTests().graded(OUTCOMES)
+        self.assertTrue(all(g['lenient'] == 'pass' for g in grades if g['strict'] == 'pass'))
+        self.assertGreater(sum(g['lenient'] == 'pass' for g in grades), sum(g['strict'] == 'pass' for g in grades))
+
+    def test_fixture_scores(self):
+        before = fixture_grades('before.jsonl')
+        self.assertEqual((before['command-008']['strict'], before['command-008']['lenient']), ('fail', 'pass'))
+        self.assertEqual((before['command-007']['strict'], before['command-007']['lenient']), ('pass', 'pass'))
+        after = fixture_grades('after.jsonl')
+        self.assertEqual((after['command-007']['strict'], after['command-007']['lenient']), ('fail', 'pass'))
+        self.assertEqual((after['command-010']['strict'], after['command-010']['lenient']), ('fail', 'pass'))
+        self.assertEqual((after['command-006']['strict'], after['command-006']['lenient']), ('fail', 'fail'))
+
+    def test_report_prints_both_scores(self):
+        prompts = grade.read_jsonl(FIXTURES / 'prompts.jsonl')
+        text = grade.format_report(grade.grade_all(prompts, grade.read_jsonl(FIXTURES / 'before.jsonl'), TODAY), TODAY)
+        row = next(l for l in text.splitlines() if l.startswith('command'))
+        self.assertEqual(row.split(), ['command', '6', '5/6', '0', '3/3', '4/5', '5/5', '3/3', '3/3', '0', '0'])
+        self.assertIn('Scores over all categories: strict 4/5, lenient 5/5', text)
+
+    def test_lenient_misses_are_listed(self):
+        prompts = grade.read_jsonl(FIXTURES / 'prompts.jsonl')
+        text = grade.format_report(grade.grade_all(prompts, grade.read_jsonl(FIXTURES / 'after.jsonl'), TODAY), TODAY)
+        self.assertIn('Wording that fails even the lenient check (0):', text)
+        res = result([call('create_reminder', text='phone the bank', time='2026-10-31T10:00:00')])
+        text = grade.format_report(grade.grade_all([reminder_prompt()], [res], TODAY), TODAY)
+        self.assertIn('Wording that fails even the lenient check (1):', text)
+        self.assertIn("command-007  text='phone the bank', expected 'call the bank'", text)
+        self.assertIn('Failures (0):', text)
+
+
+class ScriptLeakageTests(unittest.TestCase):
+    def test_characters_are_counted_per_script(self):
+        found = grade.leaked_characters('ok 好的好的 привет fine')
+        self.assertEqual({k: len(v) for k, v in found.items()}, {'Cyrillic': 6, 'CJK': 4})
+        self.assertEqual(grade.leaked_characters('فتحت الآلة الحاسبة. Done ١٢٣'), {})
+        self.assertEqual(grade.find_leakage('Привет 你好'), ['Cyrillic', 'CJK'])
+
+    def test_description_lists_distinct_characters(self):
+        text = grade.describe_leakage(grade.leaked_characters('好的好的'))
+        self.assertEqual(text, 'CJK 4 characters: 好的')
+        self.assertEqual(grade.describe_leakage(grade.leaked_characters('Я')), 'Cyrillic 1 character: Я')
+        long = grade.describe_leakage(grade.leaked_characters('абвгдежзийклмн'))
+        self.assertEqual(long, 'Cyrillic 14 characters: абвгдежзий...')
+
+    def test_each_prompt_reports_its_characters(self):
+        grades = fixture_grades('before.jsonl')
+        self.assertEqual(grades['qa-001']['leak_chars'], {'CJK': 4})
+        self.assertEqual(grades['qa-001']['issues'], ['script leakage: CJK 4 characters: 好的'])
+        self.assertEqual(grades['qa-002']['leak_chars'], {})
+        self.assertEqual(fixture_grades('after.jsonl')['qa-002']['issues'], ['script leakage: Cyrillic 6 characters: Привет'])
+
+    def test_summary_counts_characters_and_replies(self):
+        prompts = grade.read_jsonl(FIXTURES / 'prompts.jsonl')
+        for name, line in (('before.jsonl', 'Script leakage: 4 characters in 1 of 8 replies (CJK 4).'),
+                           ('after.jsonl', 'Script leakage: 6 characters in 1 of 8 replies (Cyrillic 6).')):
+            report = grade.format_report(grade.grade_all(prompts, grade.read_jsonl(FIXTURES / name), TODAY), TODAY)
+            self.assertIn(line, report)
+        clean = grade.format_report(grade.grade_all([reminder_prompt()], [result()], TODAY), TODAY)
+        self.assertIn('Script leakage: none in 1 prompts.', clean)
+
+    def test_two_scripts_in_one_reply(self):
+        res = result(reply='Привет 你好')
+        g = grade.grade_row({'id': 'command-007', 'category': 'qa', 'prompt': 'x'}, res, TODAY)
+        self.assertEqual(g['leak_chars'], {'Cyrillic': 6, 'CJK': 2})
+        self.assertEqual(g['issues'], ['script leakage: Cyrillic 6 characters: Привет; CJK 2 characters: 你好'])
+
+
+class CompareTests(unittest.TestCase):
+    def compare(self):
+        prompts = grade.read_jsonl(FIXTURES / 'prompts.jsonl')
+        return grade.format_comparison(prompts, grade.read_jsonl(FIXTURES / 'before.jsonl'),
+                                       grade.read_jsonl(FIXTURES / 'after.jsonl'), TODAY, ['before.jsonl', 'after.jsonl'])
+
+    def test_changed_prompts_are_listed_with_a_verdict(self):
+        text = self.compare()
+        self.assertIn('Prompts with changed grades: 7 of 8 (3 improved, 4 worse)', text)
+        self.assertIn('command-001  improved: tool fail -> pass; args na -> pass; strict na -> pass; lenient na -> pass', text)
+        self.assertIn('command-006  worse: args pass -> fail; strict pass -> fail; lenient pass -> fail', text)
+        self.assertIn('command-007  worse: strict pass -> fail', text)
+        self.assertIn('command-008  improved: strict fail -> pass', text)
+        self.assertIn('command-010  worse: args pass -> fail; strict pass -> fail', text)
+        self.assertIn('qa-001  improved: leaked characters 4 -> 0', text)
+        self.assertIn('qa-002  worse: leaked characters 0 -> 6', text)
+
+    def test_unchanged_grades_are_not_listed_but_new_wording_is_noted(self):
+        text = self.compare()
+        self.assertNotIn('command-004  ', text.split('Answered differently')[0])
+        self.assertIn('Answered differently with the same grades (1): command-004', text)
+
+    def test_scores_before_and_after(self):
+        text = self.compare()
+        self.assertIn('strict       4/5 -> 3/6', text)
+        self.assertIn('lenient      5/5 -> 5/6', text)
+        self.assertIn('leaked characters  4 -> 6', text)
+
+    def test_identical_files_change_nothing(self):
+        prompts = grade.read_jsonl(FIXTURES / 'prompts.jsonl')
+        rows = grade.read_jsonl(FIXTURES / 'before.jsonl')
+        text = grade.format_comparison(prompts, rows, rows, TODAY, ['a', 'b'])
+        self.assertIn('Prompts with changed grades: 0 of 8', text)
+        self.assertIn('Changed:\n  none', text)
+        self.assertNotIn('Answered differently', text)
+
+    def test_prompts_present_in_one_file_only(self):
+        prompts = grade.read_jsonl(FIXTURES / 'prompts.jsonl')
+        rows = grade.read_jsonl(FIXTURES / 'before.jsonl')
+        text = grade.format_comparison(prompts, rows, rows[:-1], TODAY, ['a', 'b'])
+        self.assertIn('Only in a: qa-002', text)
+        self.assertIn('qa-002', text.split('Changed:')[1].split('Only in')[0])
+
+    def test_main_compare_option(self):
+        out = StringIO()
+        with redirect_stdout(out):
+            code = grade.main(['--compare', str(FIXTURES / 'before.jsonl'), str(FIXTURES / 'after.jsonl'),
+                               '--prompts', str(FIXTURES / 'prompts.jsonl'), '--today', '2026-10-30'])
+        self.assertEqual(code, 0)
+        self.assertIn('Comparing before.jsonl (before) with after.jsonl (after)', out.getvalue())
+        self.assertIn('qa-002  worse', out.getvalue())
+
+    def test_main_compare_reads_pipeline_files(self):
+        prompts = {'id': 'command-001', 'category': 'command', 'prompt': 'Open the calculator.',
+                   'tool': {'name': 'open_app', 'args': {'name': 'calculator'}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for label, outcome in (('a', 'run: OpenApp { name: "notes" }'), ('b', 'run: OpenApp { name: "calculator" }')):
+                paths.append(os.path.join(tmp, label + '.jsonl'))
+                with open(paths[-1], 'w', encoding='utf-8') as f:
+                    f.write(json.dumps({'id': 'command-001', 'outcome': outcome, 'seconds': 1}) + '\n')
+            prompts_path = os.path.join(tmp, 'p.jsonl')
+            with open(prompts_path, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(prompts) + '\n')
+            out = StringIO()
+            with redirect_stdout(out):
+                grade.main(['--compare', *paths, '--pipeline', '--prompts', prompts_path, '--today', '2026-10-30'])
+        self.assertIn('command-001  improved: args fail -> pass; strict fail -> pass; lenient fail -> pass', out.getvalue())
+
+    def test_one_results_file_or_compare_not_both_or_neither(self):
+        for argv in (['--today', '2026-10-30'],
+                     ['x.jsonl', '--compare', 'a.jsonl', 'b.jsonl', '--today', '2026-10-30'],
+                     ['--compare', 'a.jsonl', '--today', '2026-10-30']):
+            with self.assertRaises(SystemExit), redirect_stderr(StringIO()):
+                grade.main(argv)
 
 
 FAKE_EXE = """#!{python}
@@ -500,7 +723,7 @@ class RunPipelineTests(unittest.TestCase):
                 code = grade.main([out, '--pipeline', '--today', '2026-10-30'])
         self.assertEqual(code, 0)
         row = next(l for l in report.getvalue().splitlines() if l.startswith('command'))
-        self.assertEqual(row.split(), ['command', '14', '12/12', '2', '10/10', '9/12', '4/4', '4/4', '0', '0'])
+        self.assertEqual(row.split(), ['command', '14', '12/12', '2', '10/10', '9/12', '11/12', '4/4', '4/4', '0', '0'])
         self.assertIn('Failures (0):', report.getvalue())
 
 
@@ -519,9 +742,9 @@ class ReportTests(unittest.TestCase):
         text = grade.format_report(grade.grade_all(prompts, results, TODAY), TODAY, ['zzz-1'])
         lines = text.splitlines()
         row = next(l for l in lines if l.startswith('command'))
-        self.assertEqual(row.split(), ['command', '2', '2/2', '0', '-', '2/2', '2/2', '1/2', '0', '1'])
+        self.assertEqual(row.split(), ['command', '2', '2/2', '0', '-', '2/2', '2/2', '2/2', '1/2', '0', '1'])
         self.assertEqual(next(l for l in lines if l.startswith('qa')).split(),
-                         ['qa', '1', '-', '0', '-', '-', '-', '-', '0', '0'])
+                         ['qa', '1', '-', '0', '-', '-', '-', '-', '-', '0', '0'])
         self.assertIn('Failures (1):', text)
         self.assertIn('command-008  time:', text)
         self.assertIn('command-008  script leakage: Cyrillic', text)
@@ -634,7 +857,7 @@ class DialectPromptsTests(unittest.TestCase):
         self.assertEqual([g['issues'] for g in grades], [[]] * 30)
         for g in grades:
             if g['tool'] is not None:
-                self.assertEqual((g['tool'], g['exact']), ('pass', 'pass'), g['id'])
+                self.assertEqual((g['tool'], g['strict']), ('pass', 'pass'), g['id'])
         self.assertEqual(sum(1 for g in grades if g['time'] == 'pass'), 12)
 
     def test_a_translated_or_changed_name_fails(self):
@@ -660,7 +883,7 @@ class DialectPromptsTests(unittest.TestCase):
                 code = grade.main([out, '--pipeline', '--prompts', str(DIALECTS), '--today', '2026-10-30'])
         self.assertEqual(code, 0)
         line = next(l for l in report.getvalue().splitlines() if l.startswith('dialect'))
-        self.assertEqual(line.split(), ['dialect', '30', '26/26', '0', '18/18', '26/26', '12/12', '12/12', '0', '0'])
+        self.assertEqual(line.split(), ['dialect', '30', '26/26', '0', '18/18', '26/26', '26/26', '12/12', '12/12', '0', '0'])
         self.assertIn('Failures (0):', report.getvalue())
 
 

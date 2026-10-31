@@ -1,0 +1,8 @@
+{"id": "command-001", "reply": "Opening.", "tool_calls": [{"name": "open_app", "arguments": "{\"name\": \"calculator\"}"}]}
+{"id": "command-004", "reply": "هذه هي الملفات.", "tool_calls": [{"name": "list_files", "arguments": "{\"path\": \"~/Documents\"}"}]}
+{"id": "command-006", "reply": "تم.", "tool_calls": [{"name": "search_files", "arguments": "{\"query\": \"ميزانيه 2026\"}"}]}
+{"id": "command-007", "reply": "Done.", "tool_calls": [{"name": "create_reminder", "arguments": "{\"text\": \"Calling the bank\", \"time\": \"2026-10-31T10:00:00\"}"}]}
+{"id": "command-008", "reply": "تم.", "tool_calls": [{"name": "create_reminder", "arguments": "{\"text\": \"الاتصال بالبنك\", \"time\": \"2026-10-31T10:00:00\"}"}]}
+{"id": "command-010", "reply": "تم.", "tool_calls": [{"name": "schedule_meeting", "arguments": "{\"title\": \"مراجعة المشروع\", \"attendees\": [\"عُمر\", \"سارة\"], \"time\": \"2026-11-01T14:00:00\"}"}]}
+{"id": "qa-001", "reply": "Paris is the capital.", "tool_calls": []}
+{"id": "qa-002", "reply": "The answer is 4. Привет", "tool_calls": []}

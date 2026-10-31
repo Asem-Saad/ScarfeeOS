@@ -3,6 +3,7 @@
 
     python3 grade.py results/<label>.jsonl --today 2026-10-30 [--prompts prompts.jsonl]
     python3 grade.py results/pipeline.jsonl --pipeline --today 2026-10-30
+    python3 grade.py --compare results/before.jsonl results/after.jsonl --today 2026-10-30
 
 The results come from run_eval.ps1 (model replies), or with --pipeline from run_pipeline.py
 (what `scarfeeos-core chat` printed). For each prompt with an expected tool it reports:
@@ -12,14 +13,24 @@ The results come from run_eval.ps1 (model replies), or with --pipeline from run_
   args  - the identifier args match: name (case-insensitive), query, lang and attendees must
           equal the expected value (trimmed, case-insensitive; no translation). A list_files
           path matches when its last folder name does ("Documents" and "~/Documents").
-  exact - every expected arg except `time`, strictly as above, with free text included and
-          the path compared in full. Paraphrases fail this on purpose; see text.
+  strict - every expected arg except `time`, strictly as above, with free text included and
+          the path compared in full. Paraphrases fail this on purpose.
+  lenient - the same args, but free text (reminder `text`, meeting `title`) passes when it has
+          the expected key words, and attendees ignore Arabic letter variants. Key words are
+          compared after dropping diacritics and tatweel, folding alef/ya/ta marbuta/hamza
+          variants and Arabic-Indic digits, dropping the definite article and the b-, l-, k-,
+          w-, f- prefixes, comparing Arabic words by their consonant skeleton (a weak
+          letter - alef, waw, ya, ha - is ignored, so اتصل matches الاتصال) and Latin words
+          without a plural or -ing/-ed ending. Extra words and stop words are ignored. File
+          names (`query`), paths, names, languages and times stay exact. Synonyms do not match.
   text  - the free-text args (reminder `text`, meeting `title`) are non-empty and in the same
           script as the user's prompt, Arabic or Latin. Any wording passes.
   time  - the `time` arg matches the expected description, resolved against --today. A time
           the assistant asked the user to confirm is graded as its candidate. A prompt the
           assistant said has no date or time fails.
-Every reply is also checked for Cyrillic or CJK characters (script leakage).
+strict and lenient are always printed side by side. Every reply is also checked for Cyrillic
+or CJK characters (script leakage); the report lists the characters per prompt and totals them.
+--compare grades two results files and lists the prompts whose grades changed.
 
 Only the description forms found in prompts.jsonl are understood: "tomorrow HH:MM",
 "<Weekday> HH:MM" and "tomorrow morning". Anything else is reported as unchecked.
@@ -138,7 +149,7 @@ def check_values(expected, arguments, skip, compare):
     return ('fail', '; '.join(wrong)) if wrong else ('pass', '')
 
 
-def check_exact(expected, arguments):
+def check_strict(expected, arguments):
     """Compares every expected arg except `time` strictly. Extra args are ignored."""
     return check_values(expected, arguments, ('time',), lambda key, got, want: normalize(got) == normalize(want))
 
@@ -146,6 +157,56 @@ def check_exact(expected, arguments):
 def check_args(expected, arguments):
     """Compares the identifier args. Free text and `time` are graded separately."""
     return check_values(expected, arguments, ('time',) + FREE_TEXT, arg_matches)
+
+
+ARABIC_MARKS = re.compile('[\u0610-\u061a\u064b-\u065f\u0670\u0640]')
+ARABIC_LETTERS = str.maketrans({'\u0623': 'ا', '\u0625': 'ا', '\u0622': 'ا', '\u0671': 'ا', '\u0649': 'ي',
+                                '\u0629': 'ه', '\u0624': 'و', '\u0626': 'ي', '\u06a9': 'ك', '\u06cc': 'ي'})
+ARABIC_WORD = re.compile('[\u0600-\u06ff]')
+ARABIC_PREFIX = re.compile('^[وف]?(?:ال|لل|[بكل]ال)')
+WEAK_LETTERS = str.maketrans('', '', 'اويه')
+STOP_WORDS = {'في', 'من', 'على', 'الى', 'عن', 'مع', 'ان', 'ما', 'the', 'a', 'an', 'to', 'of', 'for', 'and',
+              'with', 'my', 'me', 'at', 'on', 'in'}
+
+
+def fold_arabic(text):
+    """Lower-cases and drops diacritics and tatweel; folds alef, ya, ta marbuta, hamza and digit variants."""
+    text = ARABIC_MARKS.sub('', unicodedata.normalize('NFKC', text)).casefold().translate(ARABIC_LETTERS)
+    return ''.join(str(unicodedata.digit(ch)) if unicodedata.category(ch) == 'Nd' else ch for ch in text)
+
+
+def word_key(word):
+    """A comparable key for a folded word: Arabic by consonant skeleton, Latin without common endings."""
+    if ARABIC_WORD.search(word):
+        stem = ARABIC_PREFIX.sub('', word)
+        stem = stem if len(stem) >= 2 else word
+        skeleton = stem.translate(WEAK_LETTERS)
+        return skeleton if len(skeleton) >= 2 else stem
+    for ending in ('ing', 'ed', 'es', 's'):
+        if word.endswith(ending) and len(word) - len(ending) >= 3:
+            return word[:-len(ending)]
+    return word
+
+
+def key_words(text):
+    """The key of each word of text that is not a stop word (all words if every one is)."""
+    words = re.findall(r'\w+', fold_arabic(text))
+    keys = [word_key(w) for w in words if w not in STOP_WORDS]
+    return keys or [word_key(w) for w in words]
+
+
+def lenient_matches(key, got, want):
+    if key in FREE_TEXT and isinstance(got, str) and isinstance(want, str):
+        wanted, offered = key_words(want), set(key_words(got))
+        return bool(wanted) and all(word in offered for word in wanted)
+    if key == 'attendees' and isinstance(got, list) and isinstance(want, list):
+        return all(isinstance(g, str) for g in got) and sorted(map(fold_arabic, got)) == sorted(map(fold_arabic, want))
+    return arg_matches(key, got, want)
+
+
+def check_lenient(expected, arguments):
+    """Like check_strict, but free text matches on key words and attendees ignore letter variants."""
+    return check_values(expected, arguments, ('time',), lenient_matches)
 
 
 def dominant_scripts(text):
@@ -182,12 +243,28 @@ def check_text(expected, arguments, prompt_text):
     return ('fail', '; '.join(wrong)) if wrong else ('pass', '')
 
 
-def find_leakage(text):
-    found = []
+def leaked_characters(text):
+    """Returns {script: [characters in order]} for the unexpected scripts found in text."""
+    found = {}
     for name, ranges in LEAK_SCRIPTS:
-        if any(lo <= ord(ch) <= hi for ch in text for lo, hi in ranges):
-            found.append(name)
+        chars = [ch for ch in text if any(lo <= ord(ch) <= hi for lo, hi in ranges)]
+        if chars:
+            found[name] = chars
     return found
+
+
+def find_leakage(text):
+    return list(leaked_characters(text))
+
+
+def describe_leakage(chars):
+    """One line for a prompt: each script with its character count and the first distinct characters."""
+    parts = []
+    for name, found in chars.items():
+        shown = ''.join(dict.fromkeys(found))
+        parts.append(f"{name} {len(found)} {'character' if len(found) == 1 else 'characters'}: "
+                     f"{shown[:10]}{'...' if len(shown) > 10 else ''}")
+    return '; '.join(parts)
 
 
 HELD_PREFIXES = [
@@ -328,12 +405,13 @@ def pipeline_results(rows):
 
 
 def grade_row(prompt, result, today):
-    """Returns a dict with tool, held, args, exact, text, time, leakage and issues.
+    """Returns a dict with tool, held, args, strict, lenient, text, time, leakage and issues.
 
-    tool, args, exact, text and time are pass/fail/unchecked/na/None; held is True or False.
+    leak_chars maps each leaked script to its character count. tool, args, strict, lenient, text and time are pass/fail/unchecked/na/None; held is True or False.
     """
     grade = {'id': prompt['id'], 'category': prompt['category'], 'tool': None, 'held': False,
-             'args': None, 'exact': None, 'text': None, 'time': None, 'leakage': [], 'issues': []}
+             'args': None, 'strict': None, 'lenient': None, 'text': None, 'time': None, 'leakage': [],
+             'leak_chars': {}, 'lenient_detail': '', 'issues': []}
     expected = prompt.get('tool')
     wants = {}
     if expected:
@@ -345,7 +423,7 @@ def grade_row(prompt, result, today):
         grade['tool'] = tool
         for key, wanted in wants.items():
             grade[key] = 'na' if wanted else None
-        grade['exact'] = 'na'
+        grade['strict'] = grade['lenient'] = 'na'
 
     if result is None:
         grade['issues'].append('no result row')
@@ -353,9 +431,11 @@ def grade_row(prompt, result, today):
             skip('missing')
         return grade
 
-    grade['leakage'] = find_leakage(result.get('reply') or '')
-    if grade['leakage']:
-        grade['issues'].append('script leakage: ' + ', '.join(grade['leakage']))
+    leaked = leaked_characters(result.get('reply') or '')
+    grade['leakage'] = list(leaked)
+    grade['leak_chars'] = {name: len(found) for name, found in leaked.items()}
+    if leaked:
+        grade['issues'].append('script leakage: ' + describe_leakage(leaked))
     if not expected:
         return grade
 
@@ -376,7 +456,8 @@ def grade_row(prompt, result, today):
     held = result.get('held')
     grade['held'] = bool(held)
     arguments = call_arguments(match)
-    grade['exact'], _ = check_exact(expected['args'], arguments)
+    grade['strict'], _ = check_strict(expected['args'], arguments)
+    grade['lenient'], lenient_detail = check_lenient(expected['args'], arguments)
     if wants['args']:
         grade['args'], detail = check_args(expected['args'], arguments)
         if detail:
@@ -385,6 +466,8 @@ def grade_row(prompt, result, today):
         grade['text'], detail = check_text(expected['args'], arguments, prompt.get('prompt'))
         if detail:
             grade['issues'].append('text: ' + detail)
+    if grade['lenient'] == 'fail' and grade['args'] != 'fail' and grade['text'] != 'fail':
+        grade['lenient_detail'] = lenient_detail
     if wants['time']:
         if held == 'missing':
             grade['time'] = 'fail'
@@ -412,7 +495,19 @@ def ratio(counter):
     return f"{counter['pass']}/{graded}" if graded else '-'
 
 
-COLUMNS = ('tool', 'args', 'exact', 'text', 'time')
+COLUMNS = ('tool', 'args', 'strict', 'lenient', 'text', 'time')
+
+
+def leakage_summary(grades):
+    scripts = Counter()
+    for grade in grades:
+        scripts.update(grade['leak_chars'])
+    replies = sum(bool(g['leak_chars']) for g in grades)
+    if not scripts:
+        return f'Script leakage: none in {len(grades)} prompts.'
+    detail = ', '.join(f'{name} {count}' for name, count in sorted(scripts.items()))
+    return (f'Script leakage: {sum(scripts.values())} characters in {replies} of {len(grades)} replies ({detail}). '
+            'Each is listed under Failures.')
 
 
 def format_report(grades, today, unknown_ids=()):
@@ -428,16 +523,21 @@ def format_report(grades, today, unknown_ids=()):
                 entry[key][grade[key]] += 1
 
     lines = [f'Graded against today = {today} ({WEEKDAYS[today.weekday()].capitalize()})', '',
-             f"{'category':<12}{'prompts':>8}{'tool':>8}{'held':>6}{'args':>8}{'exact':>8}{'text':>8}"
-             f"{'time':>8}{'unchecked':>11}{'leakage':>9}"]
+             f"{'category':<12}{'prompts':>8}{'tool':>8}{'held':>6}{'args':>8}{'strict':>8}{'lenient':>9}"
+             f"{'text':>8}{'time':>8}{'unchecked':>11}{'leakage':>9}"]
     for name, entry in categories.items():
         lines.append(f"{name:<12}{entry['prompts']:>8}{ratio(entry['tool']):>8}{entry['held']:>6}"
-                     f"{ratio(entry['args']):>8}{ratio(entry['exact']):>8}{ratio(entry['text']):>8}"
-                     f"{ratio(entry['time']):>8}{entry['time']['unchecked']:>11}{entry['leak']:>9}")
+                     f"{ratio(entry['args']):>8}{ratio(entry['strict']):>8}{ratio(entry['lenient']):>9}"
+                     f"{ratio(entry['text']):>8}{ratio(entry['time']):>8}{entry['time']['unchecked']:>11}{entry['leak']:>9}")
     lines.append('')
-    lines.append('Columns are passed/graded. args, exact, text and time are not graded when no matching tool call exists.')
+    lines.append('Columns are passed/graded. args, strict, lenient, text and time are not graded when no matching tool call exists.')
     lines.append('held: tool passes where the assistant asked the user first (included in tool).')
-    lines.append('args: identifiers; exact: all args strictly, paraphrase fails; text: reminder text and meeting title.')
+    lines.append('args: identifiers; text: reminder text and meeting title, script only.')
+    lines.append('strict: all args exactly, a paraphrase fails. lenient: free text on key words, Arabic letter variants folded; '
+                 'file names, paths and names stay exact.')
+    totals = {key: Counter(g[key] for g in grades) for key in ('strict', 'lenient')}
+    lines += ['', f"Scores over all categories: strict {ratio(totals['strict'])}, lenient {ratio(totals['lenient'])}",
+              leakage_summary(grades)]
 
     failures = [g for g in grades if g['issues'] and any(not i.startswith('note: ') for i in g['issues'])]
     notes = [g for g in grades if any(i.startswith('note: ') for i in g['issues'])]
@@ -447,6 +547,9 @@ def format_report(grades, today, unknown_ids=()):
             lines.append(f"  {grade['id']}  {issue}")
     if not failures:
         lines.append('  none')
+    misses = [g for g in grades if g['lenient_detail']]
+    lines += ['', f'Wording that fails even the lenient check ({len(misses)}):']
+    lines += [f"  {g['id']}  {g['lenient_detail']}" for g in misses] or ['  none']
     if notes:
         lines += ['', 'Unchecked:']
         for grade in notes:
@@ -458,28 +561,101 @@ def format_report(grades, today, unknown_ids=()):
     return '\n'.join(lines)
 
 
+COMPARED = ('tool', 'held', 'args', 'strict', 'lenient', 'text', 'time')
+
+
+def answer_signature(row):
+    if row is None:
+        return None
+    return json.dumps([row.get('reply'), row.get('tool_calls'), row.get('held'), row.get('error')],
+                      sort_keys=True, ensure_ascii=False)
+
+
+def compare_grades(before, after):
+    """Returns (id, verdict, changes) for each prompt whose grades differ; verdict is improved, worse or mixed."""
+    changed = []
+    for old, new in zip(before, after):
+        changes = [f'{key} {old[key]} -> {new[key]}' for key in COMPARED if old[key] != new[key]]
+        old_chars, new_chars = sum(old['leak_chars'].values()), sum(new['leak_chars'].values())
+        if old_chars != new_chars:
+            changes.append(f'leaked characters {old_chars} -> {new_chars}')
+        if not changes:
+            continue
+        better = sum(new[key] == 'pass' and old[key] != 'pass' for key in COMPARED if key != 'held') + (new_chars < old_chars)
+        worse = sum(old[key] == 'pass' and new[key] != 'pass' for key in COMPARED if key != 'held') + (new_chars > old_chars)
+        verdict = 'mixed' if better and worse else 'improved' if better else 'worse' if worse else 'changed'
+        changed.append((old['id'], verdict, changes))
+    return changed
+
+
+def format_comparison(prompts, results_before, results_after, today, names):
+    """Grades two result sets against the same prompts and lists the prompts whose grades changed."""
+    before = grade_all(prompts, results_before, today)
+    after = grade_all(prompts, results_after, today)
+    changed = compare_grades(before, after)
+    flagged = {item[0] for item in changed}
+    old_rows = {row['id']: row for row in results_before}
+    new_rows = {row['id']: row for row in results_after}
+    reworded = [p['id'] for p in prompts if p['id'] not in flagged
+                and answer_signature(old_rows.get(p['id'])) != answer_signature(new_rows.get(p['id']))]
+    counts = Counter(verdict for _, verdict, _ in changed)
+    detail = ', '.join(f'{counts[v]} {v}' for v in ('improved', 'worse', 'mixed', 'changed') if counts[v])
+    lines = [f'Comparing {names[0]} (before) with {names[1]} (after), today = {today}', '',
+             f"Prompts with changed grades: {len(changed)} of {len(prompts)}" + (f' ({detail})' if detail else ''),
+             'Scores, passed/graded:']
+    for key in COLUMNS:
+        lines.append(f"  {key:<8}{ratio(Counter(g[key] for g in before)):>8} -> {ratio(Counter(g[key] for g in after))}")
+    lines.append('  leaked characters  '
+                 f"{sum(sum(g['leak_chars'].values()) for g in before)} -> "
+                 f"{sum(sum(g['leak_chars'].values()) for g in after)}")
+    lines += ['', 'Changed:']
+    for prompt_id, verdict, changes in changed:
+        lines.append(f"  {prompt_id}  {verdict}: " + '; '.join(changes))
+    if not changed:
+        lines.append('  none')
+    if reworded:
+        lines += ['', f'Answered differently with the same grades ({len(reworded)}): ' + ', '.join(reworded)]
+    for label, rows, other in ((names[0], old_rows, new_rows), (names[1], new_rows, old_rows)):
+        only = [p['id'] for p in prompts if p['id'] in rows and p['id'] not in other]
+        if only:
+            lines += ['', f'Only in {label}: ' + ', '.join(only)]
+    return '\n'.join(lines)
+
+
+def load_results(path, pipeline):
+    rows = read_jsonl(path)
+    return pipeline_results(rows) if pipeline else rows
+
+
 def main(argv=None):
     here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description='Grade a run_eval.ps1 or run_pipeline.py results file.')
-    parser.add_argument('results', help='results/<label>.jsonl written by run_eval.ps1 or run_pipeline.py')
+    parser.add_argument('results', nargs='?', help='results/<label>.jsonl written by run_eval.ps1 or run_pipeline.py')
+    parser.add_argument('--compare', nargs=2, metavar=('BEFORE', 'AFTER'),
+                        help='grade two results files and list the prompts whose grades changed')
     parser.add_argument('--pipeline', action='store_true', help='the results are in the run_pipeline.py format')
     parser.add_argument('--prompts', default=str(here / 'prompts.jsonl'),
                         help='prompts file; use prompts-dialects.jsonl for the Egyptian and Gulf set')
     parser.add_argument('--today', required=True, help='run date, YYYY-MM-DD')
     args = parser.parse_args(argv)
+    if bool(args.results) == bool(args.compare):
+        parser.error('give one results file, or --compare BEFORE AFTER')
     try:
         today = date.fromisoformat(args.today)
     except ValueError:
         parser.error('--today must be YYYY-MM-DD')
 
     prompts = read_jsonl(args.prompts)
-    results = read_jsonl(args.results)
-    if args.pipeline:
-        results = pipeline_results(results)
-    known = {p['id'] for p in prompts}
-    unknown = [r['id'] for r in results if r.get('id') not in known]
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
+    if args.compare:
+        before, after = (load_results(path, args.pipeline) for path in args.compare)
+        names = [Path(path).name for path in args.compare]
+        print(format_comparison(prompts, before, after, today, names))
+        return 0
+    results = load_results(args.results, args.pipeline)
+    known = {p['id'] for p in prompts}
+    unknown = [r['id'] for r in results if r.get('id') not in known]
     print(format_report(grade_all(prompts, results, today), today, unknown))
     return 0
 

@@ -7,7 +7,7 @@ Benchmark prompts used to choose default models. A model that fails the Arabic p
 - `prompts-dialects.jsonl`: 30 more Egyptian and Gulf prompts. Use it with `--prompts` on `run_pipeline.py` and `grade.py`.
 - `run_eval.ps1`: sends each prompt to a local llama-server and writes `results/<label>.jsonl` (model replies only).
 - `run_pipeline.py`: sends each prompt through `scarfeeos-core chat` and writes `results/pipeline.jsonl` (the whole assistant, not just the model).
-- `grade.py`: grades either results file against `prompts.jsonl`. `test_grade.py` tests it (`python3 -m unittest discover -s .`).
+- `grade.py`: grades either results file against `prompts.jsonl`. `test_grade.py` tests it (`python3 -m unittest discover -s .`) against the fixture files in `fixtures/` (a small prompts file and a `before.jsonl` and `after.jsonl` pair of made-up results; no real model output).
 
 `results/` is not committed.
 
@@ -60,16 +60,24 @@ Per category, `passed/graded`, or `-` when nothing was graded. Only prompts with
 | `tool` | A tool call with the expected name exists. A call the assistant holds back to ask the user counts as a pass |
 | `held` | Count of `tool` passes where the assistant asked the user first (confirm the time, confirm before running, ask for a date and time). A count, not a ratio |
 | `args` | Identifier args match: `name`, `query`, `lang` and `attendees` equal the expected value (trimmed, case-insensitive, no translation). A `list_files` `path` matches on its last folder name |
-| `exact` | Every expected arg except `time`, strictly, with free text included and the path in full. A paraphrase fails on purpose |
+| `strict` | Every expected arg except `time`, strictly, with free text included and the path in full. A paraphrase fails on purpose |
+| `lenient` | The same args, but reminder `text` and meeting `title` pass when they contain the expected key words, and `attendees` ignore Arabic letter variants and diacritics. Words are compared after dropping diacritics and tatweel, folding alef, ya, ta marbuta, hamza and Arabic-Indic digits, dropping the article and the b-, l-, k-, w-, f- prefixes, and comparing Arabic words by consonant skeleton (so `اتصل بالبنك` matches `الاتصال بالبنك`); Latin words lose plural, -ing and -ed. Extra words are fine. Synonyms do not match. File names (`query`), paths, names, languages and times stay exact |
 | `text` | Free-text args (reminder `text`, meeting `title`) are non-empty and in the script of the prompt, Arabic or Latin. Any wording passes |
 | `time` | The `time` arg matches the expected description resolved against `--today`. A time the assistant asked the user to confirm is graded as its candidate. A prompt the assistant said has no date or time fails |
 | `unchecked` | Count of `time` args whose description the grader does not understand |
-| `leakage` | Count of replies with Cyrillic or CJK characters. Checked on every prompt, not only commands |
+| `leakage` | Count of replies with Cyrillic or CJK characters. Checked on every prompt, not only commands. Each prompt's characters are listed under Failures (script, count, first characters), and a summary line gives the total characters and replies |
 
-- `args`, `exact`, `text` and `time` are not graded when no matching tool call exists, and `text` is graded only when the expected args include free text.
+- Strict and lenient are always printed side by side, per category and over all categories. Lenient never fails what strict passes. Lenient is a heuristic that has not been reviewed by a native Arabic speaker; the wording it still rejects is listed under the table.
+- `args`, `strict`, `lenient`, `text` and `time` are not graded when no matching tool call exists, and `text` is graded only when the expected args include free text.
 - Understood time descriptions: `tomorrow HH:MM`, `<Weekday> HH:MM`, `tomorrow morning`. A weekday means its next occurrence after `--today`; morning is 05:00 to 11:59. A UTC offset in the model's ISO 8601 time is ignored.
 - Failures are listed under the table, one line per issue. Result ids that are not in the prompts file are ignored and named.
 - `qa`, `writing`, `codeswitch`, `dialect`, `format` and `regression` prompts have no expected tool, so only `leakage` is checked for them. The rest is human grading.
+
+## Comparing two runs
+```
+python3 grade.py --compare results/before.jsonl results/after.jsonl --today 2026-10-30 [--prompts prompts.jsonl] [--pipeline]
+```
+Grades both files against the same prompts and prints the scores before and after, then one line per prompt whose grades changed (`improved`, `worse` or `mixed`, with each column's change, including leaked characters). Prompts that were answered differently but graded the same are named, since only a human can judge those. Use it to judge a prompt change on evidence. `--pipeline` applies to both files.
 
 ## Review status
 Written by Claude, not yet reviewed by a native Arabic speaker. Do not treat scores as final until it is.
