@@ -1,6 +1,10 @@
 //! Model plan for each AI tier. This is advice only: nothing here enforces it,
 //! and the user may override any recommendation.
-//! Memory figures were measured on an RTX 3050 with 6 GB, llama.cpp, Q4_K_M files.
+//! Memory figures were measured on an RTX 3050 with 6 GB, llama.cpp, Q4_K_M files. Nothing was
+//! measured with llama.cpp's Vulkan, HIP or SYCL backends, so on AMD and Intel GPUs the real
+//! memory use may differ. Only a GPU that llama.cpp can use and that has dedicated memory
+//! reaches `plan_for` (see `hardware::best_gpu`): an integrated GPU or one without a usable
+//! backend leaves the plan on the CPU.
 
 use crate::hardware::{Tier, SMALL_GPU_MEMORY_TOLERANCE_MIB};
 
@@ -95,7 +99,9 @@ pub fn plan_for(tier: Tier, gpu_memory_mib: Option<u64>) -> ModelPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hardware::{recommend_tier, Gpu, Hardware, FULL_MIN_GPU_MEMORY_MIB};
+    use crate::hardware::{
+        best_gpu, recommend_tier, Gpu, GpuDevice, GpuKind, GpuVendor, Hardware, FULL_MIN_GPU_MEMORY_MIB,
+    };
 
     const GB: u64 = 1024;
 
@@ -202,6 +208,37 @@ mod tests {
         assert_plan(plan_for(Tier::Dual, None), Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
         assert_plan(plan_for(Tier::Dual, Some(2 * GB)), Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
         assert_plan_layers(plan_for(Tier::Lite, Some(24 * GB)), Tier::Lite, LITE_MODEL, None, ALL_GPU_LAYERS);
+    }
+
+    fn amd(kind: GpuKind, dedicated_memory_mib: Option<u64>, llama_cpp_usable: bool) -> GpuDevice {
+        GpuDevice {
+            vendor: GpuVendor::Amd,
+            name: "AMD GPU".to_string(),
+            kind,
+            dedicated_memory_mib,
+            llama_cpp_usable,
+        }
+    }
+
+    /// Tier and plan for a machine whose only GPU is `device`.
+    fn plan_for_device(device: GpuDevice) -> ModelPlan {
+        let gpu = best_gpu(None, &[device]);
+        let tier = recommend_tier(&Hardware { gpu: gpu.clone(), ..Hardware::default() }).tier;
+        plan_for(tier, gpu.map(|g| g.memory_mib))
+    }
+
+    #[test]
+    fn usable_discrete_amd_gpu_plans_like_any_other_gpu() {
+        let plan = plan_for_device(amd(GpuKind::Discrete, Some(8176), true));
+        assert_plan(plan, Tier::Dual, QWEN3_4B, Some(JAIS_3_3_7B));
+    }
+
+    #[test]
+    fn integrated_or_unusable_or_unknown_amd_gpus_stay_lite_on_the_cpu() {
+        let lite = |device| assert_plan(plan_for_device(device), Tier::Lite, LITE_MODEL, None);
+        lite(amd(GpuKind::Integrated, None, true));
+        lite(amd(GpuKind::Discrete, Some(16 * GB), false));
+        lite(amd(GpuKind::Unknown, None, true));
     }
 
     #[test]
