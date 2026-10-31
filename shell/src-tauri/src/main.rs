@@ -2,6 +2,7 @@
 //! The panel's `/chat` request reaches the core through the `ask` command.
 
 mod core_process;
+mod request;
 
 use std::sync::Arc;
 
@@ -9,8 +10,10 @@ use core_process::Core;
 use tauri::{Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder};
 
 /// Sends one request line to the core and returns the response line with the same id.
+/// Only the kinds of request the panel sends are passed on (see request.rs).
 #[tauri::command]
 async fn ask(core: State<'_, Arc<Core>>, line: String) -> Result<String, String> {
+    request::check(&line)?;
     let core = Arc::clone(&core);
     tauri::async_runtime::spawn_blocking(move || core.ask(&line))
         .await

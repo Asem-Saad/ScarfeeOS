@@ -78,44 +78,55 @@ impl Core {
                 *guard = None;
             }
         }
-        let mut reused = guard.is_some();
-        loop {
+        // A child that is still here has answered before. It may have died since without
+        // anyone noticing, and then it never read this request: that is replaced once and
+        // the request is sent again. A child started for this request is not given a second try.
+        let mut retry = guard.is_some();
+        'attempt: loop {
             if guard.is_none() {
                 *guard = Some(self.start()?);
             }
             let session = guard.as_mut().expect("session was just started");
             let sent = writeln!(session.stdin, "{line}").and_then(|()| session.stdin.flush());
-            if sent.is_ok() {
-                break;
-            }
-            // The core never read the request, so a child that died since the last one
-            // is replaced once and the request is sent again.
-            *guard = None;
-            if !reused {
-                return Err(stopped("the core stopped before it read the request"));
-            }
-            reused = false;
-        }
-        let session = guard.as_mut().expect("session was just started");
-        let deadline = Instant::now() + self.timeout;
-        loop {
-            let wait = deadline.saturating_duration_since(Instant::now());
-            match session.lines.recv_timeout(wait) {
-                Ok(reply) => match serde_json::from_str::<Value>(&reply) {
-                    Ok(value) if value["id"].is_null() || value["id"] == expected => return Ok(reply),
-                    Ok(_) => eprintln!("core: ignoring a response for another request"),
-                    Err(_) => eprintln!("core: ignoring a line that is not JSON"),
-                },
-                Err(RecvTimeoutError::Timeout) => {
-                    *guard = None;
-                    return Err(format!(
-                        "the core did not answer within {} seconds; it was stopped and will be restarted for the next request",
-                        self.timeout.as_secs()
-                    ));
+            if sent.is_err() {
+                *guard = None;
+                if !retry {
+                    return Err(stopped("the core stopped before it read the request"));
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    *guard = None;
-                    return Err(stopped("the core stopped before it answered"));
+                retry = false;
+                continue;
+            }
+            let deadline = Instant::now() + self.timeout;
+            let mut heard = false;
+            loop {
+                let wait = deadline.saturating_duration_since(Instant::now());
+                match session.lines.recv_timeout(wait) {
+                    Ok(reply) => {
+                        heard = true;
+                        match serde_json::from_str::<Value>(&reply) {
+                            Ok(value) if value["id"].is_null() || value["id"] == expected => return Ok(reply),
+                            Ok(_) => eprintln!("core: ignoring a response for another request"),
+                            Err(_) => eprintln!("core: ignoring a line that is not JSON"),
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        *guard = None;
+                        return Err(format!(
+                            "the core did not answer within {} seconds; it was stopped and will be restarted for the next request",
+                            self.timeout.as_secs()
+                        ));
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        *guard = None;
+                        // The pipe took the request, but a reused child that ends without a
+                        // line of output most likely ended before it read it. That cannot be
+                        // known: a core that acted and then died before answering runs it twice.
+                        if retry && !heard {
+                            retry = false;
+                            continue 'attempt;
+                        }
+                        return Err(stopped("the core stopped before it answered"));
+                    }
                 }
             }
         }
@@ -334,6 +345,56 @@ printf '{"id":%s,"kind":"reply","pid":%s}\n' "$id" "$$"
         let second = parse(&core.ask(&req(2, "hi")).unwrap())["pid"].as_u64().unwrap();
         assert_ne!(first, second);
         assert_eq!(parse(&core.ask(&req(3, "hi")).unwrap())["id"], 3);
+    }
+
+    #[test]
+    fn a_child_that_ends_without_reading_the_next_request_is_replaced_and_the_request_sent_again() {
+        let dir = Scratch::new();
+        // The first run answers one line, then lingers a moment and ends without reading another,
+        // so the next request is written to a child that is alive but about to exit. Later runs answer.
+        let core = dir.core(
+            r#"
+echo "$$" >> "$1/pids"
+if [ "$(wc -l < "$1/pids")" -eq 1 ]; then
+  IFS= read -r line
+  printf '{"id":1,"kind":"reply","pid":%s}\n' "$$"
+  sleep 1
+  exit 0
+fi
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9.]*\).*/\1/p')
+  printf '{"id":%s,"kind":"reply","pid":%s}\n' "$id" "$$"
+done
+"#,
+            SHORT,
+        );
+        let first = parse(&core.ask(&req(1, "hi")).unwrap())["pid"].as_u64().unwrap();
+        assert!(alive(first), "the first child must still be running for this test to mean anything");
+        let second = parse(&core.ask(&req(2, "hi")).unwrap());
+        assert_eq!(second["id"], 2);
+        assert_ne!(second["pid"].as_u64().unwrap(), first);
+    }
+
+    #[test]
+    fn a_request_is_sent_again_only_once() {
+        let dir = Scratch::new();
+        // The first run answers one line and ends without reading another. Every later run reads a line and dies.
+        let core = dir.core(
+            r#"
+echo "$$" >> "$1/pids"
+IFS= read -r line
+if [ "$(wc -l < "$1/pids")" -eq 1 ]; then
+  printf '{"id":1,"kind":"reply","pid":%s}\n' "$$"
+  sleep 1
+fi
+exit 3
+"#,
+            SHORT,
+        );
+        assert_eq!(parse(&core.ask(&req(1, "hi")).unwrap())["id"], 1);
+        let error = core.ask(&req(2, "hi")).unwrap_err();
+        assert!(error.contains("stopped") && error.contains("restarted"), "{error}");
+        assert_eq!(fs::read_to_string(dir.path("pids")).unwrap().lines().count(), 2);
     }
 
     #[test]
