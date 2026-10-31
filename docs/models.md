@@ -1,6 +1,6 @@
 # Models and datasets
 
-Candidates for the local AI. Policy: Apache-2.0 or MIT only, no custom or use-restricted terms (see [ip-and-licensing.md](ip-and-licensing.md)). A model is only a default after it passes the Arabic and English benchmark in `core/eval/`. The owner's choice of models is recorded under "Benchmark on the RTX 3050" below; it rests on the owner's own measurements and judgement, not yet on a `core/eval/` run.
+Candidates for the local AI. Policy: Apache-2.0 or MIT only, no custom or use-restricted terms (see [ip-and-licensing.md](ip-and-licensing.md)). A model is only a default after it passes the Arabic and English benchmark in `core/eval/`. The owner's choice of models is recorded under "Benchmark on the RTX 3050" below; it rests on the owner's own measurements and judgement. The `core/eval/` dialect run on Qwen3-8B is noted in the table below.
 
 Status: **verified** = the license text (LICENSE file) or the license statement on the official model card or repository was read on the primary source on the date shown. **unverified** = not read on a primary source, or the primary sources conflict; do not rely on it. Secondary sources were not used. "Verified" says what the license is, not that it passes rule 3 (see the Habibi rows).
 
@@ -47,7 +47,7 @@ Reported by the owner, measured on an RTX 3050 with 6 GB of GPU memory, llama.cp
 | Model | Memory | Average time | Tools correct | Notes |
 |-------|--------|--------------|---------------|-------|
 | Qwen3-4B | 3.7 GB | 1.3 s | 13 of 14 | |
-| Qwen3-8B | 5.8 GB | 2.6 s | 14 of 14 | |
+| Qwen3-8B | 5.8 GB | 2.6 s | 14 of 14 | `core/eval/prompts-dialects.jsonl` (30 Egyptian and Gulf prompts): 26 of 26 tool choices correct, 0 leaked characters. Reported for the same GPU; the result files are not in this repository. Reply quality not judged by a native speaker. |
 | Jais-3-3.7B | 4.0 GB | 10.7 s | not reported | Slowest answer hit the 120 s timeout. Best Arabic in the owner's judgement (not a `core/eval/` score). |
 
 CPU only, with other work running on the machine (so the times are noisy and not a clean comparison):

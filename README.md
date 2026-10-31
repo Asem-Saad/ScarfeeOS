@@ -33,7 +33,7 @@ ScarfeeOS is a Linux-based system (Fedora as the base), not a new kernel. See [d
 | `apps/` | Productivity apps, media player, browser, meetings manager |
 | `os-image/` | Fedora-based image build and the installer |
 | `locales/` | Translations (`en`, `ar`) in Fluent format |
-| `docs/` | Architecture, installer and Arabic/i18n design rules |
+| `docs/` | Architecture, installer, Arabic/i18n rules, [lifecycle](docs/lifecycle.md), [models](docs/models.md), [voice options](docs/voice-options.md), [productivity apps](docs/productivity-apps.md) |
 
 ## Languages
 
@@ -54,7 +54,7 @@ English and Arabic are required for every user-facing feature. See [docs/i18n-an
 | 9. Beta and first release | Not started |
 | 10. Maintenance | Not started |
 
-**Current agenda:** fix the remaining assistant and installer bugs, resolve a voice that meets the licensing policy, test on real hardware, then build the first bootable image.
+**Current agenda:** resolve a voice that meets the licensing policy, test the microphone, the desktop window and the AI tiers on real hardware, then build and boot the first image. A build script exists, but no image has been built yet.
 
 Full details, including what each stage requires and what is not proven yet: [docs/lifecycle.md](docs/lifecycle.md). Task-level detail: [ROADMAP.md](ROADMAP.md).
 

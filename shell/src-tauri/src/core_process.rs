@@ -173,7 +173,8 @@ fn stopped(what: &str) -> String {
     format!("{what}; it will be restarted for the next request")
 }
 
-#[cfg(test)]
+// The fake cores are `sh` scripts and the checks read /proc, so these tests run on Unix only.
+#[cfg(all(test, unix))]
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
