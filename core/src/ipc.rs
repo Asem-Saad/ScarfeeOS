@@ -33,7 +33,7 @@ use serde_json::{json, Map, Value};
 use crate::assistant::{Assistant, Outcome};
 use crate::executor::{repeat_name, Executor, Held};
 use crate::guard::LiveData;
-use crate::hardware::{self, Hardware, Tier};
+use crate::hardware::{self, GpuDevice, GpuKind, GpuVendor, Hardware, Tier};
 use crate::lang::Language;
 use crate::tiers::{self, ModelPlan, ModelSpec};
 use crate::tools::ToolCall;
@@ -143,9 +143,32 @@ fn plan_body(plan: &ModelPlan) -> Value {
     })
 }
 
+fn gpu_body(d: &GpuDevice) -> Value {
+    json!({
+        "vendor": match d.vendor {
+            GpuVendor::Amd => "amd",
+            GpuVendor::Intel => "intel",
+            GpuVendor::Nvidia => "nvidia",
+        },
+        "name": d.name,
+        "kind": match d.kind {
+            GpuKind::Discrete => "discrete",
+            GpuKind::Integrated => "integrated",
+            GpuKind::Unknown => "unknown",
+        },
+        "memory_mib": d.dedicated_memory_mib,
+        "llama_cpp_usable": d.llama_cpp_usable,
+    })
+}
+
 /// The `hardware` response: what was detected (`ram_kib` and `gpu` are null when unknown), the recommended
 /// tier with the core's reason (English, for logs), the `plan` for that tier and a plan for each tier, so
 /// the installer can show every choice. Nothing here blocks a tier: the installer only warns.
+///
+/// `gpu` is the one GPU the advice uses. `gpus` lists every GPU found, in order, each with `vendor`
+/// ("amd", "intel" or "nvidia"), `name`, `kind` ("discrete", "integrated" or "unknown"), `memory_mib`
+/// (dedicated memory; null for integrated GPUs and when unknown) and `llama_cpp_usable` (false: found
+/// but cannot be used for the assistant).
 fn hardware_body(hw: &Hardware) -> Value {
     let gpu_memory_mib = hw.gpu.as_ref().map(|g| g.memory_mib);
     let recommendation = hardware::recommend_tier(hw);
@@ -155,6 +178,7 @@ fn hardware_body(hw: &Hardware) -> Value {
         "ram_kib": hw.ram_kib,
         "cpu": {"avx2": hw.cpu.avx2, "avx512f": hw.cpu.avx512f},
         "gpu": hw.gpu.as_ref().map(|g| json!({"name": g.name, "memory_mib": g.memory_mib})),
+        "gpus": hw.gpus.iter().map(gpu_body).collect::<Vec<_>>(),
         "recommended": {"tier": tier_name(recommendation.tier), "reason": recommendation.reason},
         "plan": plan(recommendation.tier),
         "plans": {"lite": plan(Tier::Lite), "full": plan(Tier::Full), "dual": plan(Tier::Dual)},
@@ -802,6 +826,7 @@ mod tests {
             ram_kib: Some(16_384_000),
             cpu: CpuFlags { avx2: true, avx512f: false },
             gpu: gpu_mib.map(|memory_mib| Gpu { name: "Test GPU".into(), memory_mib }),
+            ..Hardware::default()
         }
     }
 
@@ -839,6 +864,45 @@ mod tests {
     }
 
     #[test]
+    fn hardware_body_lists_every_gpu_with_its_kind_and_whether_llama_cpp_can_use_it() {
+        let device = |vendor, name: &str, kind, memory, usable| GpuDevice {
+            vendor,
+            name: name.to_string(),
+            kind,
+            dedicated_memory_mib: memory,
+            llama_cpp_usable: usable,
+        };
+        let hw = Hardware {
+            gpus: vec![
+                device(GpuVendor::Amd, "AMD GPU 1002:1638", GpuKind::Integrated, None, true),
+                device(GpuVendor::Intel, "Intel GPU 8086:46A6", GpuKind::Unknown, None, false),
+                device(GpuVendor::Nvidia, "NVIDIA GeForce RTX 3060", GpuKind::Discrete, Some(12288), true),
+            ],
+            ..hardware_with(Some(12288))
+        };
+        let r = hardware_body(&hw);
+        assert_eq!(
+            r["gpus"],
+            json!([
+                {"vendor": "amd", "name": "AMD GPU 1002:1638", "kind": "integrated", "memory_mib": null, "llama_cpp_usable": true},
+                {"vendor": "intel", "name": "Intel GPU 8086:46A6", "kind": "unknown", "memory_mib": null, "llama_cpp_usable": false},
+                {"vendor": "nvidia", "name": "NVIDIA GeForce RTX 3060", "kind": "discrete", "memory_mib": 12288, "llama_cpp_usable": true},
+            ])
+        );
+        // The old fields are unchanged.
+        assert_eq!(r["gpu"], json!({"name": "Test GPU", "memory_mib": 12288}));
+        assert_eq!(r["recommended"]["tier"], "dual");
+        for key in ["kind", "ram_kib", "cpu", "gpu", "gpus", "recommended", "plan", "plans"] {
+            assert!(r.get(key).is_some(), "missing {key}");
+        }
+    }
+
+    #[test]
+    fn hardware_body_without_gpus_has_an_empty_list() {
+        assert_eq!(hardware_body(&Hardware::default())["gpus"], json!([]));
+    }
+
+    #[test]
     fn hardware_request_answers_with_the_detected_machine() {
         let m = model(Err("must not be called".into()));
         let r = ask(&m, &json!({"id": 9, "hardware": true}));
@@ -846,6 +910,7 @@ mod tests {
         let tier = r["recommended"]["tier"].as_str().unwrap();
         assert!(["lite", "full", "dual"].contains(&tier));
         assert_eq!(r["plan"]["tier"], tier);
+        assert!(r["gpus"].is_array(), "{r}");
         assert_eq!(m.calls.get(), 0);
     }
 
