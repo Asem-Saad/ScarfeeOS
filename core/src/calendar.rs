@@ -24,6 +24,10 @@ const LOCK_WAIT: Duration = Duration::from_secs(10);
 /// the lock for milliseconds.
 const LOCK_STALE: Duration = Duration::from_secs(5);
 const LOCK_POLL: Duration = Duration::from_millis(5);
+/// Windows refuses to rename over or delete a file another thread has open.
+/// That clears within milliseconds, so such an operation is retried briefly.
+const BUSY_RETRIES: u32 = 100;
+const BUSY_WAIT: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CalendarError {
@@ -201,7 +205,7 @@ impl CalendarStore {
 
     /// A missing or empty file is an empty calendar.
     fn load(&self) -> Result<Vec<Item>, CalendarError> {
-        match fs::read(&self.path) {
+        match retry_if_busy(|| fs::read(&self.path)) {
             Ok(bytes) => parse_calendar(&bytes),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(fresh_items()),
             Err(e) => Err(e.into()),
@@ -627,7 +631,7 @@ impl Lock {
                     }
                     return Ok(Lock { path, token });
                 }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists || is_busy(&e) => {
                     if Lock::break_if_stale(&path)? {
                         continue;
                     }
@@ -642,29 +646,62 @@ impl Lock {
     }
 
     /// Removes a lock left by a crashed process. Returns whether it did.
+    ///
+    /// Only the holder of a second file, the break guard, may remove a lock,
+    /// and it re-reads the age once it holds the guard. A waiter that saw the
+    /// old lock as stale cannot then remove the fresh lock that another waiter
+    /// created after breaking it: by the time it holds the guard the lock is
+    /// fresh. The guard is held for microseconds, and it too is removed when
+    /// stale; two waiters removing a guard left by a crashed breaker is the
+    /// one remaining race, and it needs a crash inside that window.
     fn break_if_stale(path: &Path) -> Result<bool, CalendarError> {
-        let age = |p: &Path| -> Option<Duration> {
-            fs::metadata(p).ok()?.modified().ok()?.elapsed().ok()
-        };
-        if !age(path).is_some_and(|a| a >= LOCK_STALE) {
+        if !is_stale(path) {
             return Ok(false);
         }
-        // Rename first: of several waiters that all saw the stale file, only
-        // one rename succeeds, and nobody deletes a lock another waiter has
-        // just created in its place.
-        let moved = sibling(path, &format!("{:016x}.stale", random_u64()))?;
-        if fs::rename(path, &moved).is_err() {
-            return Ok(false);
+        let guard = sibling(path, "break")?;
+        match create_new_private(&guard) {
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists || is_busy(&e) => {
+                if is_stale(&guard) {
+                    let _ = retry_if_busy(|| fs::remove_file(&guard));
+                }
+                return Ok(false);
+            }
+            Err(e) => return Err(e.into()),
         }
-        if age(&moved).is_some_and(|a| a >= LOCK_STALE) {
-            let _ = fs::remove_file(&moved);
-            return Ok(true);
+        let broke = is_stale(path) && retry_if_busy(|| fs::remove_file(path)).is_ok();
+        let _ = retry_if_busy(|| fs::remove_file(&guard));
+        Ok(broke)
+    }
+}
+
+/// Whether the file is old enough to have been left by a dead process. A
+/// modification time in the future, after the clock was set back, counts as
+/// stale. A missing file is not stale.
+fn is_stale(path: &Path) -> bool {
+    match fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(modified) => modified.elapsed().map_or(true, |age| age >= LOCK_STALE),
+        Err(_) => false,
+    }
+}
+
+/// Windows reports a file that another thread has open, or has just deleted,
+/// as access denied or a sharing violation. Other systems never do, so
+/// nothing is retried there.
+fn is_busy(e: &io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
+fn retry_if_busy<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut retries = 0;
+    loop {
+        match op() {
+            Err(e) if is_busy(&e) && retries < BUSY_RETRIES => {
+                retries += 1;
+                thread::sleep(BUSY_WAIT);
+            }
+            result => return result,
         }
-        // We moved a fresh lock that replaced the stale one. Put it back,
-        // unless someone has already taken the name.
-        let _ = fs::hard_link(&moved, path);
-        let _ = fs::remove_file(&moved);
-        Ok(false)
     }
 }
 
@@ -672,8 +709,8 @@ impl Drop for Lock {
     fn drop(&mut self) {
         // Leave the file alone if it was broken as stale and is now another
         // writer's.
-        if fs::read_to_string(&self.path).is_ok_and(|t| t == self.token) {
-            let _ = fs::remove_file(&self.path);
+        if retry_if_busy(|| fs::read_to_string(&self.path)).is_ok_and(|t| t == self.token) {
+            let _ = retry_if_busy(|| fs::remove_file(&self.path));
         }
     }
 }
@@ -691,7 +728,7 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), CalendarError> {
         if let Ok(meta) = fs::metadata(path) {
             fs::set_permissions(&tmp, meta.permissions())?;
         }
-        fs::rename(&tmp, path)
+        retry_if_busy(|| fs::rename(&tmp, path))
     })();
     if let Err(e) = result {
         let _ = fs::remove_file(&tmp);
@@ -1123,6 +1160,74 @@ mod tests {
         store.add(&NOW, &reminder("a", "2026-11-05", None)).unwrap();
         assert!(!lock.exists());
         assert_eq!(store.list_upcoming(FROM).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_lock_dated_in_the_future_is_broken() {
+        let dir = TempDir::new();
+        let store = CalendarStore::new(dir.file());
+        let lock = sibling(&dir.file(), "lock").unwrap();
+        let file = fs::File::create(&lock).unwrap();
+        file.set_modified(SystemTime::now() + Duration::from_secs(3600)).unwrap();
+        drop(file);
+        store.add(&NOW, &reminder("a", "2026-11-05", None)).unwrap();
+        assert!(!lock.exists());
+        assert_eq!(store.list_upcoming(FROM).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_waiter_that_saw_a_stale_lock_cannot_break_the_fresh_one_that_replaced_it() {
+        let dir = TempDir::new();
+        let path = dir.file();
+        let lock = sibling(&path, "lock").unwrap();
+        let file = fs::File::create(&lock).unwrap();
+        file.set_modified(SystemTime::now() - LOCK_STALE - Duration::from_secs(1)).unwrap();
+        drop(file);
+        // Waiter X saw the stale lock. Waiter Z breaks it and takes the lock
+        // before X gets as far as removing anything.
+        assert!(is_stale(&lock));
+        let z = Lock::acquire(&path).unwrap();
+        assert!(!Lock::break_if_stale(&lock).unwrap());
+        assert_eq!(fs::read_to_string(&lock).unwrap(), z.token);
+        // Waiter W still cannot take it.
+        let w = {
+            let path = path.clone();
+            thread::spawn(move || Lock::acquire(&path).map(drop))
+        };
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(fs::read_to_string(&lock).unwrap(), z.token);
+        drop(z);
+        w.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn two_writers_never_hold_the_lock_together_while_breaking_a_stale_one() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        for _ in 0..20 {
+            let dir = TempDir::new();
+            let path = dir.file();
+            let lock = sibling(&path, "lock").unwrap();
+            let file = fs::File::create(&lock).unwrap();
+            file.set_modified(SystemTime::now() - LOCK_STALE - Duration::from_secs(1)).unwrap();
+            drop(file);
+            let inside = Arc::new(AtomicBool::new(false));
+            let handles: Vec<_> = (0..6)
+                .map(|_| {
+                    let (path, inside) = (path.clone(), inside.clone());
+                    thread::spawn(move || {
+                        let held = Lock::acquire(&path).unwrap();
+                        assert!(!inside.swap(true, Ordering::SeqCst), "two writers hold the lock");
+                        thread::sleep(Duration::from_millis(2));
+                        inside.store(false, Ordering::SeqCst);
+                        drop(held);
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+        }
     }
 
     #[test]
