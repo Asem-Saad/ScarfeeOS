@@ -4,11 +4,15 @@ Run: python3 os-image/test_image_definition.py
 
 This checks that config.xml is well-formed XML and follows the project's
 policy. If kiwi-ng is on PATH it also validates config.xml against kiwi's own
-schema (that test is skipped otherwise). It does not build anything.
+schema (that test is skipped otherwise). It also checks the first-build settings
+and build-image.sh (arguments and prerequisite messages only). It does not build
+anything.
 """
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -29,6 +33,7 @@ GPG_KEY_PATH = "file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-$basearch
 FORBIDDEN_NAMES = re.compile(
     r"(fedora|red ?hat|rhel|centos|generic|ubuntu|debian|suse|windows|microsoft|"
     r"apple|macos|google|chrome|android|gnome|kde|vlc)", re.IGNORECASE)
+BUILD_SCRIPT = HERE / "build-image.sh"
 REQUIRED_FONTS = [
     "google-noto-naskh-arabic-fonts",
     "google-noto-kufi-arabic-fonts",
@@ -206,6 +211,77 @@ class ImageDefinition(unittest.TestCase):
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_first_build_settings(self):
+        prefs = self.root.find("preferences")
+        # kiwi's dnf4 backend needs dnf4/dnf-3 inside the image; Fedora 44's "dnf" name is dnf5
+        self.assertEqual(prefs.find("packagemanager").text, "dnf5")
+        self.assertIn("dnf5", self.config["image"])
+        # without it kiwi passes --releasever=0
+        release = prefs.find("release-version").text
+        self.assertRegex(release, r"^\d+$")
+        for repo in self.root.findall("repository"):
+            url = repo.find("source").get("path")
+            if not url.startswith("this://"):
+                self.assertRegex(url, r"/%s/Everything/" % release)
+        image_type = prefs.find("type")
+        self.assertEqual(image_type.get("image"), "iso")
+        self.assertEqual(image_type.get("firmware"), "uefi")
+        # checkmedia/tagmedia, kiwi's default media-check tools, are not in Fedora
+        self.assertIsNone(image_type.get("mediacheck"))
+        # kiwi looks for gcdx64.efi, which only the cdboot package ships
+        for name in ("grub2-efi-x64", "grub2-efi-x64-cdboot", "shim-x64", "grub2-pc", "dracut-kiwi-live"):
+            self.assertIn(name, self.config["image"])
+
+    def test_build_script_is_present_and_executable(self):
+        text = BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("#!/usr/bin/env bash\n"))
+        self.assertIn("set -euo pipefail", text)
+        if sys.platform != "win32":
+            self.assertTrue(os.access(BUILD_SCRIPT, os.X_OK), "build-image.sh is not executable")
+        for name in ("scarfeeos-release", "scarfeeos-repos", "scarfeeos-logos"):
+            self.assertIn(name, text)
+        self.assertIn("createrepo_c", text)
+        self.assertIn("kiwi-ng", text)
+        # output goes only where the argument says
+        self.assertNotIn("/tmp/scarfeeos", text)
+        self.assertIn("GiB", text)
+
+    @unittest.skipIf(sys.platform == "win32" or not shutil.which("bash"), "needs bash")
+    def test_build_script_syntax(self):
+        result = subprocess.run(["bash", "-n", str(BUILD_SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(sys.platform == "win32" or not shutil.which("bash"), "needs bash")
+    def test_build_script_usage(self):
+        result = subprocess.run(["bash", str(BUILD_SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("OUTPUT_DIR", result.stderr)
+        result = subprocess.run(["bash", str(BUILD_SCRIPT), "--help"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        for fact in ("OUTPUT_DIR", "GiB", ".iso", "kiwi.log"):
+            self.assertIn(fact, result.stdout)
+
+    @unittest.skipIf(sys.platform == "win32" or not shutil.which("bash") or os.geteuid() == 0,
+                     "needs bash and a non-root user")
+    def test_build_script_stops_before_changing_anything_without_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            result = subprocess.run(["bash", str(BUILD_SCRIPT), str(out)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("Prerequisites not met", result.stderr)
+            self.assertIn("must run as root", result.stderr)
+            self.assertFalse(out.exists())
+
+    def test_readme_has_boot_test_checklists(self):
+        readme = (HERE / "README.md").read_text(encoding="utf-8")
+        self.assertIn("build-image.sh", readme)
+        match = re.search(r"^## Boot-test checklist\n(.*?)(?=^## )", readme, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(match, "README.md has no 'Boot-test checklist' section")
+        section = match.group(1)
+        self.assertIn("qemu-system-x86_64", section)
+        self.assertIn("Real laptop", section)
+        self.assertGreaterEqual(section.count("- [ ]"), 10)
 
     def test_release_spec_fields(self):
         tags, text = read_spec(RELEASE_DIR / "scarfeeos-release.spec")

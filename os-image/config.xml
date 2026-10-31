@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   ScarfeeOS image description for kiwi (first draft).
-  NOT BUILT. Validated against the kiwi 11.1.6 schema, and package names
-  checked against the Fedora 44 repository metadata; see README.md for dates
-  and sources. The package lists here must match packages.txt (checked by
-  test_image_definition.py).
+  NOT BUILT. Validated against the schema shipped with kiwi 11.1.1 (the
+  version in Fedora 44), and package names and dependencies checked against
+  the Fedora 44 repository metadata; see README.md for dates and sources.
+  Build it with build-image.sh. The package lists here must match
+  packages.txt (checked by test_image_definition.py).
 -->
 <image schemaversion="8.5" name="ScarfeeOS">
   <description type="system">
@@ -15,12 +16,13 @@
 
   <preferences>
     <version>0.0.1</version>
-    <packagemanager>dnf4</packagemanager>
+    <packagemanager>dnf5</packagemanager>
+    <release-version>44</release-version>
     <locale>en_US,ar_SA</locale>
     <keytable>us</keytable>
     <timezone>UTC</timezone>
     <rpm-excludedocs>true</rpm-excludedocs>
-    <type image="iso" flags="overlay" firmware="uefi" volid="SCARFEEOS" mediacheck="true">
+    <type image="iso" flags="overlay" firmware="uefi" volid="SCARFEEOS">
       <bootloader name="grub2"/>
     </type>
   </preferences>
@@ -33,7 +35,7 @@
     <source path="https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/"/>
   </repository>
 
-  <!-- Put the RPMs built from scarfeeos-release/, scarfeeos-repos/ and scarfeeos-logos/ in os-image/repo/ and run createrepo_c on it before a build -->
+  <!-- build-image.sh builds the RPMs from scarfeeos-release/, scarfeeos-repos/ and scarfeeos-logos/ into os-image/repo/ and runs createrepo_c on it -->
   <repository type="rpm-md" alias="scarfeeos" priority="1">
     <source path="this://repo"/>
   </repository>
@@ -45,6 +47,7 @@
     <package name="dracut"/>
     <package name="dracut-kiwi-live"/>
     <package name="grub2-efi-x64"/>
+    <package name="grub2-efi-x64-cdboot"/>
     <package name="shim-x64"/>
     <package name="grub2-pc"/>
     <package name="syslinux"/>
