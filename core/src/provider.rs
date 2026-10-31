@@ -486,12 +486,23 @@ mod tests {
                 let Ok((mut conn, _)) = listener.accept() else { break };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 1024];
-                while !String::from_utf8_lossy(&buf).contains("\r\n\r\n") {
+                // Read the body too: on Windows, closing with unread data resets the connection.
+                loop {
                     let n = conn.read(&mut chunk).unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf);
+                    if let Some(i) = text.find("\r\n\r\n") {
+                        let len = text[..i]
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                            .unwrap_or(0);
+                        if buf.len() >= i + 4 + len {
+                            break;
+                        }
+                    }
                     if n == 0 {
                         break;
                     }
-                    buf.extend_from_slice(&chunk[..n]);
                 }
                 let head = String::from_utf8_lossy(&buf).into_owned();
                 let line = head.lines().next().unwrap_or("").to_string();
