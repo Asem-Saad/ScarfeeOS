@@ -31,17 +31,37 @@ fn main() {
 }
 
 /// The command model at `SCARFEEOS_COMMAND_URL`, default http://127.0.0.1:8080,
-/// and the writer at `SCARFEEOS_WRITER_URL` when that is set. Both must be loopback.
+/// and the writer at `SCARFEEOS_WRITER_URL` when that is set.
+///
+/// Before the first request each server is asked which model file it has
+/// loaded. `SCARFEEOS_COMMAND_MODEL` and `SCARFEEOS_WRITER_MODEL` give the
+/// expected file names (for example `Qwen3-4B-Q4_K_M.gguf`); a server that
+/// reports another file, or none, is refused. `SCARFEEOS_SKIP_MODEL_CHECK=1`
+/// turns the check off for development. URLs must be loopback unless
+/// `SCARFEEOS_ALLOW_REMOTE_MODEL=1` is set. A process of the same user can fake
+/// the answers, so this protects against mistakes and stale servers only.
 fn providers() -> Result<(LocalProvider, Option<LocalProvider>), String> {
-    let url = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
-    let mut command = LocalConfig::default();
-    if let Some(base_url) = url("SCARFEEOS_COMMAND_URL") {
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    let flag = |name: &str| var(name).is_some_and(|v| v == "1");
+    let check_server = !flag("SCARFEEOS_SKIP_MODEL_CHECK");
+    if !check_server {
+        eprintln!("warning: SCARFEEOS_SKIP_MODEL_CHECK is set, the model server is not verified");
+    }
+    let allow_non_loopback = flag("SCARFEEOS_ALLOW_REMOTE_MODEL");
+    if allow_non_loopback {
+        eprintln!("warning: SCARFEEOS_ALLOW_REMOTE_MODEL is set, the model URL may leave this machine");
+    }
+    let mut command = LocalConfig { check_server, allow_non_loopback, expected_model_file: var("SCARFEEOS_COMMAND_MODEL"), ..LocalConfig::default() };
+    if let Some(base_url) = var("SCARFEEOS_COMMAND_URL") {
         command.base_url = base_url;
     }
     // Jais took up to 120 seconds in testing, so the writer waits longer.
-    let writer = url("SCARFEEOS_WRITER_URL").map(|base_url| LocalConfig {
+    let writer = var("SCARFEEOS_WRITER_URL").map(|base_url| LocalConfig {
         base_url,
         timeout: Duration::from_secs(300),
+        check_server,
+        allow_non_loopback,
+        expected_model_file: var("SCARFEEOS_WRITER_MODEL"),
         ..LocalConfig::default()
     });
     Ok((LocalProvider::new(command)?, writer.map(LocalProvider::new).transpose()?))

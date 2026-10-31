@@ -34,6 +34,17 @@ pub struct LocalConfig {
     /// Allow a base URL that is not a loopback address. Off by default so
     /// local-only mode cannot send data over the network by accident.
     pub allow_non_loopback: bool,
+    /// Ask the server who it is before the first request (llama.cpp `/props`,
+    /// then `/v1/models`) and refuse if it does not look like a llama.cpp
+    /// server, or if it has loaded a different model file than
+    /// `expected_model_file`. Turn off for development or for servers without
+    /// those endpoints (vLLM).
+    pub check_server: bool,
+    /// File name of the model the server should have loaded, for example
+    /// `Qwen3-4B-Q4_K_M.gguf`. Only the last path component is compared, and
+    /// case is ignored. With `None` the server must still identify itself,
+    /// but any model is accepted.
+    pub expected_model_file: Option<String>,
 }
 
 impl Default for LocalConfig {
@@ -43,6 +54,8 @@ impl Default for LocalConfig {
             model: None,
             timeout: Duration::from_secs(120),
             allow_non_loopback: false,
+            check_server: false,
+            expected_model_file: None,
         }
     }
 }
@@ -52,6 +65,7 @@ pub struct LocalProvider {
     config: LocalConfig,
     endpoint: String,
     agent: ureq::Agent,
+    verified: std::sync::OnceLock<()>,
 }
 
 impl LocalProvider {
@@ -72,7 +86,7 @@ impl LocalProvider {
             .proxy(None)
             .build()
             .into();
-        Ok(LocalProvider { config, endpoint, agent })
+        Ok(LocalProvider { config, endpoint, agent, verified: std::sync::OnceLock::new() })
     }
 }
 
@@ -100,6 +114,24 @@ fn http_host(url: &str) -> Result<&str, String> {
         return Err(format!("local provider: base URL has no host: {url}"));
     }
     Ok(host)
+}
+
+/// Last component of a path written with `/` or `\\`, since the server may run
+/// on Windows.
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+/// The model file name a llama.cpp server reports, from `/props` or, when that
+/// has no `model_path`, from `/v1/models`. Both are documented in
+/// tools/server/README.md of llama.cpp: `/props` has `model_path` ("the path
+/// to model file, same with `-m`"), and `/v1/models` has `data[].id`, which is
+/// the `-m` path unless `--alias` is set. `/props` comes first because an alias
+/// does not change it.
+fn loaded_model_file(props: Option<&serde_json::Value>, models: Option<&serde_json::Value>) -> Option<String> {
+    let from_props = props.and_then(|p| p["model_path"].as_str());
+    let from_models = models.and_then(|m| m["data"][0]["id"].as_str());
+    from_props.or(from_models).filter(|p| !p.is_empty()).map(|p| file_name(p).to_string())
 }
 
 fn is_loopback(host: &str) -> bool {
@@ -163,7 +195,48 @@ impl LocalProvider {
         parse_reply(&json)
     }
 
+    /// Checks once, before the first request, that the server on this port is a
+    /// llama.cpp server with the expected model file loaded.
+    ///
+    /// This guards against accidents and stale servers: another program that
+    /// took the port, or an old server still running with a different model.
+    /// It does not stop a determined attacker. A process of the same user can
+    /// run a fake server that answers `/props` with any model name, and can
+    /// take the port again after this check. Loopback and this check make the
+    /// mistake visible; they are not authentication.
+    fn verify_server(&self) -> Result<(), String> {
+        if !self.config.check_server || self.verified.get().is_some() {
+            return Ok(());
+        }
+        let base = self.config.base_url.trim_end_matches('/');
+        let get = |path: &str| -> Option<serde_json::Value> {
+            let mut resp = self.agent.get(&format!("{base}{path}")).call().ok()?;
+            if resp.status().as_u16() != 200 {
+                return None;
+            }
+            serde_json::from_str(&resp.body_mut().read_to_string().ok()?).ok()
+        };
+        let props = get("/props");
+        let models = if props.as_ref().is_some_and(|p| p["model_path"].is_string()) { None } else { get("/v1/models") };
+        let loaded = loaded_model_file(props.as_ref(), models.as_ref()).ok_or_else(|| {
+            format!(
+                "local provider: the server at {base} did not report a loaded model (no model_path in /props, no id in /v1/models); it may not be a llama.cpp server, so no request was sent"
+            )
+        })?;
+        if let Some(expected) = &self.config.expected_model_file {
+            if !file_name(expected).eq_ignore_ascii_case(&loaded) {
+                return Err(format!(
+                    "local provider: the server at {base} has loaded {loaded}, but {} was expected; stop the other server or check the model setting, no request was sent",
+                    file_name(expected)
+                ));
+            }
+        }
+        let _ = self.verified.set(());
+        Ok(())
+    }
+
     fn post(&self, mut body: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.verify_server()?;
         if let Some(model) = &self.config.model {
             body["model"] = model.clone().into();
         }
@@ -320,7 +393,7 @@ mod tests {
             base_url: url,
             model: model.map(str::to_string),
             timeout: Duration::from_secs(5),
-            allow_non_loopback: false,
+            ..LocalConfig::default()
         })
         .unwrap()
     }
@@ -398,6 +471,137 @@ mod tests {
             ..LocalConfig::default()
         };
         assert!(LocalProvider::new(cfg).is_ok());
+    }
+
+    /// Fake llama.cpp server for the identity check. Answers `max` connections,
+    /// each with the body routed by its request path (404 when none matches),
+    /// and returns the request lines it saw, in order.
+    fn serve_routes(routes: Vec<(&'static str, &'static str)>, max: usize) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(false).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for _ in 0..max {
+                let Ok((mut conn, _)) = listener.accept() else { break };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !String::from_utf8_lossy(&buf).contains("\r\n\r\n") {
+                    let n = conn.read(&mut chunk).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let head = String::from_utf8_lossy(&buf).into_owned();
+                let line = head.lines().next().unwrap_or("").to_string();
+                let path = line.split(' ').nth(1).unwrap_or("").to_string();
+                let (status, body) = match routes.iter().find(|(p, _)| *p == path) {
+                    Some((_, body)) => ("200 OK", *body),
+                    None => ("404 Not Found", "{}"),
+                };
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                conn.write_all(reply.as_bytes()).unwrap();
+                seen.push(line);
+            }
+            seen
+        });
+        (url, handle)
+    }
+
+    const CHAT_OK: &str = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+    const EXPECTED: &str = "Qwen3-4B-Q4_K_M.gguf";
+
+    fn checked(url: String, expected: Option<&str>) -> LocalProvider {
+        LocalProvider::new(LocalConfig {
+            base_url: url,
+            timeout: Duration::from_secs(5),
+            check_server: true,
+            expected_model_file: expected.map(str::to_string),
+            ..LocalConfig::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn server_check_passes_on_matching_model_and_runs_once() {
+        let routes = vec![
+            ("/props", r#"{"model_path":"/models/Qwen3-4B-Q4_K_M.gguf","total_slots":1}"#),
+            ("/v1/chat/completions", CHAT_OK),
+        ];
+        let (url, server) = serve_routes(routes, 3);
+        let p = checked(url, Some(EXPECTED));
+        assert_eq!(ask(&p).unwrap(), "ok");
+        assert_eq!(ask(&p).unwrap(), "ok");
+        let seen = server.join().unwrap();
+        assert!(seen[0].starts_with("GET /props "), "{seen:?}");
+        assert!(seen[1].starts_with("POST /v1/chat/completions "), "{seen:?}");
+        assert_eq!(seen.len(), 3, "the identity check must run only once: {seen:?}");
+    }
+
+    #[test]
+    fn server_check_accepts_a_windows_path_and_other_case() {
+        let routes = vec![("/props", r#"{"model_path":"D:\\models\\qwen3-4b-q4_k_m.GGUF"}"#), ("/v1/chat/completions", CHAT_OK)];
+        let (url, server) = serve_routes(routes, 2);
+        assert_eq!(ask(&checked(url, Some(EXPECTED))).unwrap(), "ok");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn server_check_refuses_a_different_model_before_any_request() {
+        let routes = vec![("/props", r#"{"model_path":"/models/Jais-3-3.7B-Q4_K_M.gguf"}"#), ("/v1/chat/completions", CHAT_OK)];
+        let (url, server) = serve_routes(routes, 1);
+        let err = ask(&checked(url, Some(EXPECTED))).unwrap_err();
+        let seen = server.join().unwrap();
+        assert!(err.contains("Jais-3-3.7B-Q4_K_M.gguf") && err.contains(EXPECTED) && err.contains("no request was sent"), "{err}");
+        assert_eq!(seen.len(), 1, "only the identity check may reach the server: {seen:?}");
+    }
+
+    #[test]
+    fn server_check_refuses_a_server_that_reports_no_model() {
+        // Neither /props nor /v1/models is usable: a fake or foreign server.
+        let (url, server) = serve_routes(vec![("/props", r#"{"total_slots":1}"#), ("/v1/models", r#"{"data":[]}"#)], 2);
+        let err = ask(&checked(url, Some(EXPECTED))).unwrap_err();
+        let seen = server.join().unwrap();
+        assert!(err.contains("did not report a loaded model"), "{err}");
+        assert!(seen.iter().all(|l| l.starts_with("GET ")), "{seen:?}");
+    }
+
+    #[test]
+    fn server_check_falls_back_to_v1_models() {
+        let routes = vec![
+            ("/v1/models", r#"{"object":"list","data":[{"id":"/models/Qwen3-4B-Q4_K_M.gguf"}]}"#),
+            ("/v1/chat/completions", CHAT_OK),
+        ];
+        let (url, server) = serve_routes(routes, 3);
+        assert_eq!(ask(&checked(url, Some(EXPECTED))).unwrap(), "ok");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn server_check_without_expected_name_still_needs_an_answer() {
+        let (url, server) = serve_routes(vec![("/props", r#"{"model_path":"/m/x.gguf"}"#), ("/v1/chat/completions", CHAT_OK)], 2);
+        assert_eq!(ask(&checked(url, None)).unwrap(), "ok");
+        server.join().unwrap();
+        let (url, server) = serve_routes(vec![], 2);
+        assert!(ask(&checked(url, None)).is_err());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn server_check_off_sends_no_identity_request() {
+        let (url, server) = serve_routes(vec![("/v1/chat/completions", CHAT_OK)], 1);
+        assert_eq!(ask(&local(url, None)).unwrap(), "ok");
+        assert_eq!(server.join().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn server_check_does_not_make_a_remote_url_acceptable() {
+        let cfg = LocalConfig { base_url: "http://192.168.1.10:8080".into(), check_server: true, ..LocalConfig::default() };
+        assert!(LocalProvider::new(cfg).is_err());
     }
 
     #[test]
